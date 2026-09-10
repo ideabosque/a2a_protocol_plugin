@@ -1,0 +1,629 @@
+#!/usr/bin/python
+"""Utility functions for A2A operations"""
+
+import json
+from typing import Any
+
+from silvaengine_utility.serializer import Serializer
+
+from .config import Config
+
+__author__ = "SilvaEngine Team"
+
+
+def format_agent_response(agent: dict[str, Any]) -> dict[str, Any]:
+    """
+    Format agent data for API response.
+
+    Args:
+        agent: Agent data dictionary
+
+    Returns:
+        Formatted agent response
+    """
+    return {
+        "agent_id": agent.get("agent_id"),
+        "agent_name": agent.get("agent_name"),
+        "capabilities": agent.get("capabilities", []),
+        "status": agent.get("status"),
+        "endpoint_url": agent.get("endpoint_url"),
+    }
+
+
+def format_task_response(task: dict[str, Any]) -> dict[str, Any]:
+    """
+    Format task data for API response.
+
+    Args:
+        task: Task data dictionary
+
+    Returns:
+        Formatted task response
+    """
+    return {
+        "task_id": task.get("task_id"),
+        "task_type": task.get("task_type"),
+        "status": task.get("status"),
+        "priority": task.get("priority"),
+        "assigned_agent_id": task.get("assigned_agent_id"),
+    }
+
+
+def format_message_response(message: dict[str, Any]) -> dict[str, Any]:
+    """
+    Format message data for API response.
+
+    Args:
+        message: Message data dictionary
+
+    Returns:
+        Formatted message response
+    """
+    return {
+        "message_id": message.get("message_id"),
+        "from_agent_id": message.get("from_agent_id"),
+        "to_agent_id": message.get("to_agent_id"),
+        "status": message.get("status"),
+        "message_type": message.get("message_type"),
+    }
+
+
+def load_a2a_configuration(config_file: str) -> dict[str, Any]:
+    """
+    Load A2A configuration from JSON file.
+
+    Args:
+        config_file: Path to configuration file
+
+    Returns:
+        Configuration dictionary
+    """
+    try:
+        with open(config_file) as f:
+            config = json.load(f)
+
+        if Config.logger:
+            Config.logger.info(f"Loaded A2A configuration from: {config_file}")
+
+        return config
+
+    except Exception as e:
+        if Config.logger:
+            Config.logger.error(f"Failed to load configuration: {e}")
+        return {}
+
+
+def get_a2a_configuration_with_retry(
+    partition_key: str, max_retries: int = 3
+) -> dict[str, Any]:
+    """
+    Fetch A2A configuration with retry logic.
+
+    Args:
+        partition_key: Composite key in format "endpoint_id#part_id"
+        max_retries: Maximum number of retry attempts
+
+    Returns:
+        Configuration dictionary
+    """
+    import time
+
+    for attempt in range(max_retries):
+        try:
+            query = """
+                query GetA2ASettings($partitionKey: String!) {
+                    a2aSettingList(partitionKey: $partitionKey) {
+                        a2aSettingList {
+                            partitionKey
+                            settingId
+                            setting
+                        }
+                    }
+                }
+            """
+
+            result = Config.a2a_core.a2a_core_graphql(
+                partition_key=partition_key,
+                query=query,
+                variables={"partitionKey": partition_key},
+            )
+
+            data = Serializer.json_loads(result.get("body", result))
+
+            if "errors" not in data:
+                settings = (
+                    data.get("data", {})
+                    .get("a2aSettingList", {})
+                    .get("a2aSettingList", [])
+                )
+
+                # Merge all settings into a single configuration
+                config = {}
+                for setting_item in settings:
+                    setting_data = setting_item.get("setting", {})
+                    if isinstance(setting_data, str):
+                        setting_data = json.loads(setting_data)
+                    config.update(setting_data)
+
+                return config
+
+        except Exception as e:
+            if Config.logger:
+                Config.logger.warning(
+                    f"Configuration fetch attempt {attempt + 1} failed: {e}"
+                )
+
+            if attempt < max_retries - 1:
+                time.sleep(2**attempt)  # Exponential backoff
+            else:
+                if Config.logger:
+                    Config.logger.error(
+                        "Failed to fetch configuration after all retries"
+                    )
+
+    return {}
+
+
+# =============================================================================
+# A2A SDK Integration - Async Wrapper Functions
+# =============================================================================
+# These async wrappers provide compatibility with the new A2A SDK components
+# (A2ADaemonExecutor, DynamoDBA2ATaskStore) while using the existing GraphQL
+# infrastructure.
+# =============================================================================
+
+
+async def insert_a2a_task(
+    partition_key: str, task_data: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    Create a new A2A task in DynamoDB.
+
+    Async wrapper around the GraphQL mutation for A2A SDK integration.
+
+    Args:
+        partition_key: Composite partition key (endpoint_id#part_id)
+        task_data: Task data including id, status, type, etc.
+
+    Returns:
+        Created task data
+    """
+
+    # Split partition_key to get endpoint_id and part_id
+    parts = partition_key.split("#")
+    endpoint_id = parts[0]
+    part_id = parts[1] if len(parts) > 1 else ""
+
+    mutation = """
+        mutation InsertUpdateA2aTask(
+            $partitionKey: String!,
+            $taskId: String!,
+            $endpointId: String!,
+            $partId: String!,
+            $taskType: String!,
+            $assignedAgentId: String,
+            $status: String!,
+            $priority: String!,
+            $inputData: String,
+            $outputData: String,
+            $updatedBy: String!
+        ) {
+            insertUpdateA2aTask(
+                partitionKey: $partitionKey,
+                taskId: $taskId,
+                endpointId: $endpointId,
+                partId: $partId,
+                taskType: $taskType,
+                assignedAgentId: $assignedAgentId,
+                status: $status,
+                priority: $priority,
+                inputData: $inputData,
+                outputData: $outputData,
+                updatedBy: $updatedBy
+            ) {
+                partitionKey
+                taskId
+                taskType
+                assignedAgentId
+                status
+                priority
+                inputData
+                outputData
+                createdAt
+                updatedAt
+            }
+        }
+    """
+
+    variables = {
+        "partitionKey": partition_key,
+        "taskId": task_data["id"],
+        "endpointId": endpoint_id,
+        "partId": part_id,
+        "taskType": task_data.get("task_type", "general"),
+        "assignedAgentId": task_data.get("assigned_agent_id"),
+        "status": task_data.get("status", "SUBMITTED").upper(),
+        "priority": task_data.get("priority", "medium"),
+        "inputData": Serializer.json_dumps(task_data.get("input_data", {})),
+        "outputData": Serializer.json_dumps(task_data.get("output_data", {})),
+        "updatedBy": task_data.get("updated_by", "a2a_sdk"),
+    }
+
+    result = Config.a2a_core.a2a_core_graphql(
+        partition_key=partition_key, query=mutation, variables=variables
+    )
+
+    data = Serializer.json_loads(result.get("body", result))
+
+    if "errors" in data:
+        raise ValueError(f"Failed to create task: {data['errors']}")
+
+    task = data.get("data", {}).get("insertUpdateA2aTask", {})
+
+    # Normalize the response to match expected format
+    return {
+        "id": task.get("taskId"),
+        "status": task.get("status"),
+        "task_type": task.get("taskType"),
+        "assigned_agent_id": task.get("assignedAgentId"),
+        "priority": task.get("priority"),
+        "input_data": json.loads(task.get("inputData", "{}")),
+        "output_data": json.loads(task.get("outputData", "{}")),
+        "created_at": task.get("createdAt"),
+        "updated_at": task.get("updatedAt"),
+    }
+
+
+async def get_a2a_task(partition_key: str, task_id: str) -> dict[str, Any]:
+    """
+    Retrieve an A2A task from DynamoDB.
+
+    Async wrapper around the GraphQL query for A2A SDK integration.
+
+    Args:
+        partition_key: Composite partition key
+        task_id: Task identifier
+
+    Returns:
+        Task data if found, None otherwise
+    """
+
+    # NOTE: a2aTask takes ONLY task_id as an argument — the resolver reads the
+    # partition from info.context["partition_key"], which a2a_core_graphql()
+    # sets from the partition_key kwarg below. Passing partitionKey as a GraphQL
+    # argument makes the whole query fail validation ("Unknown argument
+    # 'partitionKey' on field 'Query.a2aTask'"), and the error is swallowed
+    # below, so this function silently returned None for every task.
+    # partitionKey is still selectable as a response *field*.
+    query = """
+        query GetA2aTask($taskId: String!) {
+            a2aTask(taskId: $taskId) {
+                partitionKey
+                taskId
+                taskType
+                assignedAgentId
+                status
+                priority
+                inputData
+                outputData
+                createdAt
+                updatedAt
+                completedAt
+            }
+        }
+    """
+
+    variables = {
+        "taskId": task_id,
+    }
+
+    result = Config.a2a_core.a2a_core_graphql(
+        partition_key=partition_key, query=query, variables=variables
+    )
+
+    # The GraphQL wrapper may return an API-Gateway-style envelope
+    # {"statusCode":..., "body": "<json string>"} or a plain dict already
+    # parsed. Handle both so json_loads isn't fed a dict.
+    raw = result.get("body", result) if isinstance(result, dict) else result
+    if isinstance(raw, (dict, list)):
+        data = raw
+    else:
+        data = Serializer.json_loads(raw)
+
+    if not isinstance(data, dict):
+        return None
+
+    if "errors" in data:
+        return None
+
+    task = data.get("data", {}).get("a2aTask")
+    if not task:
+        return None
+
+    # Normalize the response. inputData/outputData may arrive as already-
+    # parsed dicts (the JSON scalar returns objects) or as JSON strings
+    # (older envelope); coerce both.
+    def _as_dict(v):
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, (str, bytes)) and v:
+            try:
+                import json as _j
+                parsed = _j.loads(v)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    return {
+        "id": task.get("taskId"),
+        "status": task.get("status"),
+        "task_type": task.get("taskType"),
+        "assigned_agent_id": task.get("assignedAgentId"),
+        "priority": task.get("priority"),
+        "input_data": _as_dict(task.get("inputData")),
+        "output_data": _as_dict(task.get("outputData")),
+        "created_at": task.get("createdAt"),
+        "updated_at": task.get("updatedAt"),
+        "completed_at": task.get("completedAt"),
+    }
+
+
+async def update_a2a_task(
+    partition_key: str, task_id: str, task_data: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    Update an A2A task in DynamoDB.
+
+    Async wrapper around the GraphQL mutation for A2A SDK integration.
+
+    Args:
+        partition_key: Composite partition key
+        task_id: Task identifier
+        task_data: Updated task fields
+
+    Returns:
+        Updated task data
+    """
+
+    # Split partition_key
+    parts = partition_key.split("#")
+    endpoint_id = parts[0]
+    part_id = parts[1] if len(parts) > 1 else ""
+
+    mutation = """
+        mutation UpdateA2aTask(
+            $partitionKey: String!,
+            $taskId: String!,
+            $endpointId: String!,
+            $partId: String!,
+            $taskType: String,
+            $assignedAgentId: String,
+            $status: String,
+            $priority: String,
+            $inputData: String,
+            $outputData: String,
+            $updatedBy: String!
+        ) {
+            insertUpdateA2aTask(
+                partitionKey: $partitionKey,
+                taskId: $taskId,
+                endpointId: $endpointId,
+                partId: $partId,
+                taskType: $taskType,
+                assignedAgentId: $assignedAgentId,
+                status: $status,
+                priority: $priority,
+                inputData: $inputData,
+                outputData: $outputData,
+                updatedBy: $updatedBy
+            ) {
+                partitionKey
+                taskId
+                taskType
+                assignedAgentId
+                status
+                priority
+                inputData
+                outputData
+                updatedAt
+            }
+        }
+    """
+
+    # Build variables - only include fields that are being updated
+    variables = {
+        "partitionKey": partition_key,
+        "taskId": task_id,
+        "endpointId": endpoint_id,
+        "partId": part_id,
+        "updatedBy": task_data.get("updated_by", "a2a_sdk"),
+    }
+
+    # Add optional update fields
+    if "task_type" in task_data:
+        variables["taskType"] = task_data["task_type"]
+    if "assigned_agent_id" in task_data:
+        variables["assignedAgentId"] = task_data["assigned_agent_id"]
+    if "status" in task_data:
+        variables["status"] = task_data["status"].upper()
+    if "priority" in task_data:
+        variables["priority"] = task_data["priority"]
+    if "input_data" in task_data:
+        variables["inputData"] = Serializer.json_dumps(task_data["input_data"])
+    if "output_data" in task_data:
+        variables["outputData"] = Serializer.json_dumps(task_data["output_data"])
+
+    result = Config.a2a_core.a2a_core_graphql(
+        partition_key=partition_key, query=mutation, variables=variables
+    )
+
+    data = Serializer.json_loads(result.get("body", result))
+
+    if "errors" in data:
+        raise ValueError(f"Failed to update task: {data['errors']}")
+
+    task = data.get("data", {}).get("insertUpdateA2aTask", {})
+
+    return {
+        "id": task.get("taskId"),
+        "status": task.get("status"),
+        "task_type": task.get("taskType"),
+        "assigned_agent_id": task.get("assignedAgentId"),
+        "priority": task.get("priority"),
+        "updated_at": task.get("updatedAt"),
+    }
+
+
+async def delete_a2a_task(partition_key: str, task_id: str) -> bool:
+    """
+    Delete an A2A task from DynamoDB.
+
+    Async wrapper around the GraphQL mutation for A2A SDK integration.
+
+    Args:
+        partition_key: Composite partition key
+        task_id: Task identifier
+
+    Returns:
+        True if deleted successfully
+    """
+
+    mutation = """
+        mutation DeleteA2aTask($partitionKey: String!, $taskId: String!) {
+            deleteA2aTask(partitionKey: $partitionKey, taskId: $taskId)
+        }
+    """
+
+    variables = {
+        "partitionKey": partition_key,
+        "taskId": task_id,
+    }
+
+    result = Config.a2a_core.a2a_core_graphql(
+        partition_key=partition_key, query=mutation, variables=variables
+    )
+
+    data = Serializer.json_loads(result.get("body", result))
+
+    if "errors" in data:
+        raise ValueError(f"Failed to delete task: {data['errors']}")
+
+    return data.get("data", {}).get("deleteA2aTask", False)
+
+
+async def query_a2a_task(
+    partition_key: str, filter_dict: dict[str, Any] = None, limit: int = 100
+) -> list:
+    """
+    Query A2A tasks from DynamoDB with optional filters.
+
+    Async wrapper around the GraphQL query for A2A SDK integration.
+
+    Args:
+        partition_key: Composite partition key
+        filter_dict: Optional filters (status, priority, etc.)
+        limit: Maximum number of results
+
+    Returns:
+        List of task data dictionaries
+    """
+
+    # NOTE: a2a_task_list takes NO partitionKey argument — the resolver reads
+    # the partition from info.context["partition_key"], which a2a_core_graphql
+    # sets from the partition_key kwarg below. Passing partitionKey as an
+    # argument fails validation ("Unknown argument 'partitionKey' on field
+    # 'Query.a2aTaskList'"), and the error is swallowed, returning []. The
+    # list field is a2a_task_list (graphene snake_case -> a2aTaskList alias is
+    # NOT exposed here) and the count field is total (not totalCount).
+    query = """
+        query ListA2aTasks(
+            $status: String,
+            $priority: String,
+            $taskType: String,
+            $assignedAgentId: String,
+            $pageNumber: Int,
+            $limit: Int
+        ) {
+            a2aTaskList(
+                status: $status,
+                priority: $priority,
+                taskType: $taskType,
+                assignedAgentId: $assignedAgentId,
+                pageNumber: $pageNumber,
+                limit: $limit
+            ) {
+                a2aTaskList {
+                    taskId
+                    taskType
+                    assignedAgentId
+                    status
+                    priority
+                    inputData
+                    outputData
+                    createdAt
+                    updatedAt
+                }
+                total
+            }
+        }
+    """
+
+    filter_dict = filter_dict or {}
+
+    variables = {
+        "limit": limit,
+    }
+
+    # Add optional filters
+    if "status" in filter_dict:
+        variables["status"] = filter_dict["status"]
+    if "priority" in filter_dict:
+        variables["priority"] = filter_dict["priority"]
+    if "task_type" in filter_dict:
+        variables["taskType"] = filter_dict["task_type"]
+    if "assigned_agent_id" in filter_dict:
+        variables["assignedAgentId"] = filter_dict["assigned_agent_id"]
+
+    result = Config.a2a_core.a2a_core_graphql(
+        partition_key=partition_key, query=query, variables=variables
+    )
+
+    raw = result.get("body", result) if isinstance(result, dict) else result
+    if isinstance(raw, (dict, list)):
+        data = raw
+    else:
+        data = Serializer.json_loads(raw)
+
+    if not isinstance(data, dict) or "errors" in data:
+        return []
+
+    task_list = data.get("data", {}).get("a2aTaskList", {}).get("a2aTaskList", []) or []
+
+    def _as_dict(v):
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, (str, bytes)) and v:
+            try:
+                import json as _j
+                parsed = _j.loads(v)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    # Normalize the response
+    return [
+        {
+            "id": task.get("taskId"),
+            "status": task.get("status"),
+            "task_type": task.get("taskType"),
+            "assigned_agent_id": task.get("assignedAgentId"),
+            "priority": task.get("priority"),
+            "input_data": _as_dict(task.get("inputData")),
+            "output_data": _as_dict(task.get("outputData")),
+            "created_at": task.get("createdAt"),
+            "updated_at": task.get("updatedAt"),
+        }
+        for task in task_list
+    ]

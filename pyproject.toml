@@ -1,0 +1,87 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "a2a-protocol-plugin"
+version = "0.0.1"
+description = "A2A Protocol Plugin — ports A2A-protocol-specific code, importing shared daemon plumbing from silvaengine_daemon"
+readme = "README.md"
+authors = ["bibow"]
+license = "MIT"
+keywords = ["a2a", "agent", "protocol", "plugin", "distributed-systems", "multi-agent"]
+homepage = "https://github.com/ideabosque/silvaengine"
+repository = "https://github.com/ideabosque/silvaengine"
+documentation = "https://github.com/ideabosque/silvaengine/blob/main/a2a_protocol_plugin/README.md"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+packages = [{include = "a2a_protocol_plugin"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+# Core dependency: shared daemon plumbing
+silvaengine-daemon = ">=0.0.1"
+
+# A2A SDK (Starlette transitive via http-server extra for SDK protocol server)
+a2a-sdk = {extras = ["http-server"], version = ">=1.0.0"}
+
+# Authentication (JWT verification — gateway handles token issuance)
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+bcrypt = "^4.0.1"
+
+# HTTP Client
+httpx = "^0.25.0"
+
+# GraphQL
+graphene = "^3.3"
+graphql-core = "^3.2.0"
+
+# Configuration
+python-dotenv = "^1.0.0"
+pydantic = "^2.0.0"
+
+# AWS
+boto3 = "^1.28.0"
+
+# Utilities
+pendulum = "^2.1.2"
+
+# SilvaEngine Libraries
+silvaengine-dynamodb-base = "^0.1.0"
+silvaengine-utility = "^0.1.0"
+
+# Database
+pynamodb = "^5.5.0"
+
+# gRPC (optional)
+grpcio = {version = "^1.59.0", optional = true}
+grpcio-tools = {version = "^1.59.0", optional = true}
+
+# Telemetry (optional)
+opentelemetry-api = {version = "^1.20.0", optional = true}
+opentelemetry-sdk = {version = "^1.20.0", optional = true}
+
+# PostgreSQL (optional)
+SQLAlchemy = {version = ">=1.4", optional = true}
+psycopg2-binary = {version = ">=2.9", optional = true}
+alembic = {version = ">=1.10", optional = true}
+
+[tool.poetry.extras]
+grpc = ["grpcio", "grpcio-tools"]
+telemetry = ["opentelemetry-api", "opentelemetry-sdk"]
+postgresql = ["SQLAlchemy", "psycopg2-binary", "alembic"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+pytest-cov = "^4.1.0"
+ruff = "^0.0.292"

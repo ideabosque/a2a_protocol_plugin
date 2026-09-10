@@ -1,0 +1,73 @@
+{
+  "agents": [
+    {
+      "agent_id": "test-agent-001",
+      "agent_name": "Test Agent 1",
+      "capabilities": ["text-processing", "data-analysis"],
+      "endpoint_url": "http://localhost:8000",
+      "status": "active"
+    },
+    {
+      "agent_id": "test-agent-002",
+      "agent_name": "Test Agent 2",
+      "capabilities": ["image-processing", "ml-inference"],
+      "endpoint_url": "http://localhost:8001",
+      "status": "active"
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "task-001",
+      "task_type": "analysis",
+      "input_data": {
+        "text": "Analyze this text for sentiment"
+      },
+      "status": "pending"
+    },
+    {
+      "task_id": "task-002",
+      "task_type": "transformation",
+      "input_data": {
+        "data": [1, 2, 3, 4, 5]
+      },
+      "status": "pending"
+    }
+  ],
+  "messages": [
+    {
+      "from_agent_id": "test-agent-001",
+      "to_agent_id": "test-agent-002",
+      "message_type": "text",
+      "payload": {
+        "content": "Hello from agent 1"
+      }
+    },
+    {
+      "from_agent_id": "test-agent-002",
+      "to_agent_id": "test-agent-001",
+      "message_type": "json",
+      "payload": {
+        "result": "completed",
+        "data": {"score": 0.95}
+      }
+    }
+  ],
+  "settings": [
+    {
+      "setting_id": "setting-001",
+      "setting": {
+        "max_retries": 3,
+        "timeout": 30,
+        "log_level": "INFO"
+      }
+    },
+    {
+      "setting_id": "setting-002",
+      "setting": {
+        "cache_enabled": true,
+        "cache_ttl": 1800,
+        "batch_size": 100
+      }
+    }
+  ]
+}
