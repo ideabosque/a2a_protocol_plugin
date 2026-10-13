@@ -286,10 +286,16 @@ class OpenClawAgentHandler:
         return headers
 
     def _to_openai_messages(self, input_messages: list[dict[str, Any]]) -> list[dict[str, str]]:
-        """Convert bridge input_messages to OpenAI chat format."""
+        """Convert bridge input_messages to OpenAI chat format.
+
+        History is persisted with the A2A role ``agent``; OpenAI-compatible
+        APIs only accept ``assistant`` for model turns.
+        """
         messages: list[dict[str, str]] = []
         for msg in input_messages or []:
             role = msg.get("role", "user")
+            if role == "agent":
+                role = "assistant"
             content = msg.get("content", "")
             if content:
                 messages.append({"role": role, "content": content})

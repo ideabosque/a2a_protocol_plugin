@@ -439,7 +439,7 @@ async def build_input_messages(
                             messages.append({"role": role, "content": content})
         except Exception as e:
             if logger:
-                logger.warning(f"Failed to load message history: {e}")
+                logger.error(f"Failed to load message history: {e}")
 
     if not messages:
         messages = [{"role": "user", "content": user_query or "No user input provided"}]
@@ -660,7 +660,7 @@ async def _persist_thread_run_message(
             )
     except Exception as e:
         if _logger:
-            _logger.warning(f"Phase 10 persistence warning: {e}")
+            _logger.error(f"Agent message persistence failed (conversation history will be incomplete): {e}")
 
 
 async def _persist_user_message(
@@ -695,7 +695,7 @@ async def _persist_user_message(
             )
     except Exception as e:
         if _logger:
-            _logger.warning(f"User message persistence warning: {e}")
+            _logger.error(f"User message persistence failed (conversation history will be incomplete): {e}")
 
 
 # ---------------------------------------------------------------------------

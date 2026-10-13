@@ -466,9 +466,10 @@ class TestMessageConversion:
             {"role": "user", "content": "hello"},
             {"role": "agent", "content": "hi back"},
         ])
+        # Persisted A2A "agent" turns become OpenAI "assistant" turns.
         assert msgs == [
             {"role": "user", "content": "hello"},
-            {"role": "agent", "content": "hi back"},
+            {"role": "assistant", "content": "hi back"},
         ]
 
     def test_to_openai_messages_skips_empty(self, logger, base_agent_config):
