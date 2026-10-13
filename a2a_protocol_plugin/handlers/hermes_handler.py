@@ -235,11 +235,17 @@ class HermesAgentHandler:
 
                         # --- Reasoning ---
                         elif event_type in ("reasoning.delta", "reasoning.available"):
-                            # Reasoning text — emit as token so A2A clients see it
+                            # Reasoning text — tagged so the bridge keeps it out
+                            # of the answer. Hermes sends reasoning.available
+                            # with the final answer text after the deltas, so
+                            # treating it as answer content duplicates the reply.
                             reasoning_text = event.get("text") or event.get("delta", "")
                             if reasoning_text:
-                                chunks.append(reasoning_text)
-                                stream_queue.put({"name": "token", "value": reasoning_text})
+                                stream_queue.put({
+                                    "name": "token",
+                                    "value": reasoning_text,
+                                    "meta": {"data_format": "reasoning"},
+                                })
 
                         # --- Lifecycle ---
                         elif event_type in ("response.created", "run.started"):

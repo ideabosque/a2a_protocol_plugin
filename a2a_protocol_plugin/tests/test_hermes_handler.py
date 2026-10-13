@@ -182,6 +182,39 @@ class TestStreaming:
         )
         assert result["content"] == "Hello World"
 
+    def test_streaming_reasoning_not_duplicated_into_answer(self, logger, base_agent_config):
+        # Real Hermes sends reasoning.available carrying the final answer text
+        # after the message.delta events; it must not be appended to the answer.
+        run_id = "run_reasoning"
+
+        def mock_hermes(request: httpx.Request):
+            if request.method == "POST":
+                return httpx.Response(200, json={"run_id": run_id})
+            events = [{"event": "message.delta", "delta": d} for d in ["Your name", " is Bob."]]
+            events.append({"event": "reasoning.available", "text": "Your name is Bob."})
+            events.append({"event": "run.completed", "output": "Your name is Bob."})
+            body = "\n".join("data: " + json.dumps(e) for e in events) + "\n"
+            return httpx.Response(200, content=body.encode("utf-8"))
+
+        transport = httpx.MockTransport(mock_hermes)
+        handler = _make_handler(logger, base_agent_config, transport)
+        q = queue.Queue()
+        ev = threading.Event()
+        result = handler.ask_model(
+            input_messages=[{"role": "user", "content": "What is my name?"}],
+            context={},
+            stream_queue=q,
+            stream_event=ev,
+        )
+        assert result["content"] == "Your name is Bob."
+
+        tokens = [item for item in list(q.queue) if item["name"] == "token"]
+        answer = [t["value"] for t in tokens if not t.get("meta")]
+        reasoning = [t for t in tokens if t.get("meta")]
+        assert "".join(answer) == "Your name is Bob."
+        assert len(reasoning) == 1
+        assert reasoning[0]["meta"] == {"data_format": "reasoning"}
+
     def test_streaming_tool_call(self, logger, base_agent_config):
         run_id = "run_tool"
 
