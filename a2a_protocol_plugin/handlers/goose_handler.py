@@ -73,9 +73,13 @@ __author__ = "bibow"
 REASONING_META = {"data_format": "reasoning"}
 
 # goose session modes surfaced by session/new (see session/set_mode).
+# Fix (2026-10-15): ``deny`` used ``auto``, where goose never sends
+# session/request_permission, so the reject_once answer was never used and
+# tools ran anyway. ``approve`` makes goose ask for every tool call, which
+# _on_permission_request then rejects.
 ACP_MODE_FOR_PERMISSION = {
     "auto_allow": "auto",
-    "deny": "auto",
+    "deny": "approve",
     "ask": "approve",
 }
 

@@ -713,6 +713,34 @@ class TestPermissions:
         answers = server.permission_answers
         assert answers and answers[0]["result"]["outcome"]["optionId"] == "reject_once"
 
+    @pytest.mark.parametrize("policy, expected_mode", [
+        ("auto_allow", "auto"),
+        # deny must make goose ASK (approve mode) so the bridge can reject;
+        # in auto mode goose never sends request_permission and tools run.
+        ("deny", "approve"),
+        ("ask", "approve"),
+    ])
+    def test_session_mode_sent_for_each_policy(self, logger, server, policy,
+                                               expected_mode):
+        modes: list[str] = []
+        original = server.handler
+
+        def spy(request):
+            if request.method == "POST":
+                try:
+                    body = json.loads(request.content.decode() or "{}")
+                except ValueError:
+                    body = {}
+                if body.get("method") == "session/set_mode":
+                    modes.append(body["params"]["modeId"])
+            return original(request)
+
+        h = _handler(logger, httpx.MockTransport(spy),
+                     setting={**SETTING, "GOOSE_PERMISSION_MODE": policy})
+        assert h.goose_permission_mode == policy
+        h.ask_model([{"role": "user", "content": "Hi"}], {})
+        assert modes == [expected_mode]
+
     def test_ask_emits_approval_chunk_then_allow(self, logger, server):
         h, sid, ctx = _session_with_permission_run(logger, server)
         h.goose_permission_mode = "ask"
