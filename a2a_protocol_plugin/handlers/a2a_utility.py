@@ -240,14 +240,20 @@ async def insert_a2a_task(
         "taskId": task_data["id"],
         "endpointId": endpoint_id,
         "partId": part_id,
-        "taskType": task_data.get("task_type", "general"),
+        # task_type (snake) / taskType (camel) both arrive - the taskstore's
+        # _task_to_dict emits camelCase keys.
+        "taskType": (
+            task_data.get("task_type")
+            or task_data.get("taskType")
+            or "general"
+        ),
         "assignedAgentId": task_data.get("assigned_agent_id"),
         "status": (task_data.get("status") or "SUBMITTED").upper(),
         "priority": task_data.get("priority", "medium"),
         # the mutation expects JSON-typed variables, not strings
         "inputData": task_data.get("input_data", {}),
         "outputData": task_data.get("output_data", {}),
-        "contextId": task_data.get("context_id"),
+        "contextId": task_data.get("context_id") or task_data.get("sessionId"),
         "updatedBy": task_data.get("updated_by", "a2a_sdk"),
     }
 
@@ -445,21 +451,44 @@ async def update_a2a_task(
         "updatedBy": task_data.get("updated_by", "a2a_sdk"),
     }
 
+    # The schema requires taskType (String!) on every insertUpdateA2aTask
+    # call, so it must ALWAYS be in the variables: prefer the value carried
+    # by task_data (both key casings arrive), then the persisted row, then a
+    # neutral default. This keeps the stored taskType intact on partial puts.
+    task_type = (
+        task_data.get("task_type")
+        or task_data.get("taskType")
+    )
+    if not task_type:
+        try:
+            existing = await get_a2a_task(
+                partition_key=partition_key, task_id=task_id
+            )
+            task_type = (
+                (existing or {}).get("task_type")
+                or (existing or {}).get("taskType")
+            )
+        except Exception:
+            existing = None
+    variables["taskType"] = task_type or "general"
+
     # Add optional update fields
-    if "task_type" in task_data:
-        variables["taskType"] = task_data["task_type"]
-    if "assigned_agent_id" in task_data:
+    if task_data.get("assigned_agent_id") is not None:
         variables["assignedAgentId"] = task_data["assigned_agent_id"]
-    if "status" in task_data:
+    if "assignedAgentId" in task_data and task_data.get("assignedAgentId"):
+        variables["assignedAgentId"] = task_data["assignedAgentId"]
+    if "status" in task_data and task_data["status"]:
         variables["status"] = task_data["status"].upper()
-    if "priority" in task_data:
+    if "priority" in task_data and task_data["priority"]:
         variables["priority"] = task_data["priority"]
     if "input_data" in task_data:
         variables["inputData"] = task_data["input_data"]
     if "output_data" in task_data:
         variables["outputData"] = task_data["output_data"]
-    if "context_id" in task_data:
+    if "context_id" in task_data and task_data["context_id"]:
         variables["contextId"] = task_data["context_id"]
+    elif task_data.get("sessionId"):
+        variables["contextId"] = task_data["sessionId"]
 
     result = Config.a2a_core.a2a_core_graphql(
         partition_key=partition_key, query=mutation, variables=variables
