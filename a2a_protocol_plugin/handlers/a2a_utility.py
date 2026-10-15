@@ -196,20 +196,19 @@ async def insert_a2a_task(
 
     mutation = """
         mutation InsertUpdateA2aTask(
-            $partitionKey: String!,
-            $taskId: String!,
+            $taskId: String,
             $endpointId: String!,
             $partId: String!,
             $taskType: String!,
             $assignedAgentId: String,
-            $status: String!,
-            $priority: String!,
-            $inputData: String,
-            $outputData: String,
-            $updatedBy: String!
+            $status: String,
+            $priority: String,
+            $inputData: JSON,
+            $outputData: JSON,
+            $contextId: String,
+            $updatedBy: String
         ) {
             insertUpdateA2aTask(
-                partitionKey: $partitionKey,
                 taskId: $taskId,
                 endpointId: $endpointId,
                 partId: $partId,
@@ -219,33 +218,36 @@ async def insert_a2a_task(
                 priority: $priority,
                 inputData: $inputData,
                 outputData: $outputData,
+                contextId: $contextId,
                 updatedBy: $updatedBy
             ) {
-                partitionKey
-                taskId
-                taskType
-                assignedAgentId
-                status
-                priority
-                inputData
-                outputData
-                createdAt
-                updatedAt
+                a2aTask {
+                    taskId
+                    taskType
+                    assignedAgentId
+                    status
+                    priority
+                    inputData
+                    outputData
+                    contextId
+                    updatedAt
+                }
             }
         }
     """
 
     variables = {
-        "partitionKey": partition_key,
         "taskId": task_data["id"],
         "endpointId": endpoint_id,
         "partId": part_id,
         "taskType": task_data.get("task_type", "general"),
         "assignedAgentId": task_data.get("assigned_agent_id"),
-        "status": task_data.get("status", "SUBMITTED").upper(),
+        "status": (task_data.get("status") or "SUBMITTED").upper(),
         "priority": task_data.get("priority", "medium"),
-        "inputData": Serializer.json_dumps(task_data.get("input_data", {})),
-        "outputData": Serializer.json_dumps(task_data.get("output_data", {})),
+        # the mutation expects JSON-typed variables, not strings
+        "inputData": task_data.get("input_data", {}),
+        "outputData": task_data.get("output_data", {}),
+        "contextId": task_data.get("context_id"),
         "updatedBy": task_data.get("updated_by", "a2a_sdk"),
     }
 
@@ -258,7 +260,9 @@ async def insert_a2a_task(
     if "errors" in data:
         raise ValueError(f"Failed to create task: {data['errors']}")
 
-    task = data.get("data", {}).get("insertUpdateA2aTask", {})
+    task = (
+        data.get("data", {}).get("insertUpdateA2aTask", {}).get("a2aTask", {})
+    )
 
     # Normalize the response to match expected format
     return {
@@ -393,20 +397,19 @@ async def update_a2a_task(
 
     mutation = """
         mutation UpdateA2aTask(
-            $partitionKey: String!,
-            $taskId: String!,
+            $taskId: String,
             $endpointId: String!,
             $partId: String!,
             $taskType: String,
             $assignedAgentId: String,
             $status: String,
             $priority: String,
-            $inputData: String,
-            $outputData: String,
-            $updatedBy: String!
+            $inputData: JSON,
+            $outputData: JSON,
+            $contextId: String,
+            $updatedBy: String
         ) {
             insertUpdateA2aTask(
-                partitionKey: $partitionKey,
                 taskId: $taskId,
                 endpointId: $endpointId,
                 partId: $partId,
@@ -416,24 +419,26 @@ async def update_a2a_task(
                 priority: $priority,
                 inputData: $inputData,
                 outputData: $outputData,
+                contextId: $contextId,
                 updatedBy: $updatedBy
             ) {
-                partitionKey
-                taskId
-                taskType
-                assignedAgentId
-                status
-                priority
-                inputData
-                outputData
-                updatedAt
+                a2aTask {
+                    taskId
+                    taskType
+                    assignedAgentId
+                    status
+                    priority
+                    inputData
+                    outputData
+                    contextId
+                    updatedAt
+                }
             }
         }
     """
 
     # Build variables - only include fields that are being updated
     variables = {
-        "partitionKey": partition_key,
         "taskId": task_id,
         "endpointId": endpoint_id,
         "partId": part_id,
@@ -450,9 +455,11 @@ async def update_a2a_task(
     if "priority" in task_data:
         variables["priority"] = task_data["priority"]
     if "input_data" in task_data:
-        variables["inputData"] = Serializer.json_dumps(task_data["input_data"])
+        variables["inputData"] = task_data["input_data"]
     if "output_data" in task_data:
-        variables["outputData"] = Serializer.json_dumps(task_data["output_data"])
+        variables["outputData"] = task_data["output_data"]
+    if "context_id" in task_data:
+        variables["contextId"] = task_data["context_id"]
 
     result = Config.a2a_core.a2a_core_graphql(
         partition_key=partition_key, query=mutation, variables=variables
@@ -463,7 +470,9 @@ async def update_a2a_task(
     if "errors" in data:
         raise ValueError(f"Failed to update task: {data['errors']}")
 
-    task = data.get("data", {}).get("insertUpdateA2aTask", {})
+    task = (
+        data.get("data", {}).get("insertUpdateA2aTask", {}).get("a2aTask", {})
+    )
 
     return {
         "id": task.get("taskId"),
