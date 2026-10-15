@@ -190,6 +190,18 @@ class Config:
     openclaw_agent_selector: str = "model"
     openclaw_stream_timeout: float = 300.0
 
+    # Phase G (goose bridge): "goose serve" ACP-over-HTTP settings.
+    # Provider/model selection stays on the goose server (GOOSE_PROVIDER,
+    # GOOSE_MODEL, GOOSE_DISABLE_KEYRING=1); GOOSE_SERVER__SECRET_KEY is the
+    # server's shared secret (sent as X-Secret-Key).
+    goose_api_url: str | None = None
+    goose_secret_key: str | None = None
+    goose_cwd: str = "/workspace"
+    goose_mcp_servers: Any = None
+    goose_permission_mode: str = "auto_allow"
+    goose_stream_timeout: float = 300.0
+    goose_approval_timeout: float = 120.0
+
     # Phase 10: Core Engine (ai_agent_core_engine) gateway bridge settings
     core_engine_graphql_url: str | None = None
     core_engine_ws_url: str | None = None
@@ -287,6 +299,38 @@ class Config:
         )
         cls.openclaw_stream_timeout = float(
             setting.get("OPENCLAW_STREAM_TIMEOUT", setting.get("openclaw_stream_timeout", 300.0))
+        )
+
+        # Goose ("goose serve" ACP-over-HTTP) bridge settings
+        cls.goose_api_url = setting.get("GOOSE_API_URL") or setting.get("goose_api_url")
+        cls.goose_secret_key = (
+            setting.get("GOOSE_SECRET_KEY") or setting.get("goose_secret_key")
+        )
+        cls.goose_cwd = (
+            setting.get("GOOSE_CWD") or setting.get("goose_cwd") or "/workspace"
+        )
+        goose_mcp_servers_raw = (
+            setting.get("GOOSE_MCP_SERVERS") or setting.get("goose_mcp_servers")
+        )
+        if isinstance(goose_mcp_servers_raw, str) and goose_mcp_servers_raw.strip():
+            try:
+                cls.goose_mcp_servers = json.loads(goose_mcp_servers_raw)
+            except (ValueError, TypeError):
+                cls.goose_mcp_servers = []
+        elif isinstance(goose_mcp_servers_raw, list):
+            cls.goose_mcp_servers = goose_mcp_servers_raw
+        else:
+            cls.goose_mcp_servers = []
+        cls.goose_permission_mode = (
+            setting.get("GOOSE_PERMISSION_MODE")
+            or setting.get("goose_permission_mode")
+            or "auto_allow"
+        )
+        cls.goose_stream_timeout = float(
+            setting.get("GOOSE_STREAM_TIMEOUT", setting.get("goose_stream_timeout", 300.0))
+        )
+        cls.goose_approval_timeout = float(
+            setting.get("GOOSE_APPROVAL_TIMEOUT", setting.get("goose_approval_timeout", 120.0))
         )
 
         # Core Engine (ai_agent_core_engine) gateway bridge settings

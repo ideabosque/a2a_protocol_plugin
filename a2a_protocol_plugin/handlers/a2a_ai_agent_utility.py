@@ -67,6 +67,10 @@ AGENT_TYPE_MAP: dict[str, dict[str, str]] = {
         "module_name": "a2a_protocol_plugin.handlers.openclaw_handler",
         "class_name": "OpenClawAgentHandler",
     },
+    "goose": {
+        "module_name": "a2a_protocol_plugin.handlers.goose_handler",
+        "class_name": "GooseAgentHandler",
+    },
     "a2a_proxy": {
         "module_name": "a2a_protocol_plugin.handlers.a2a_proxy_handler",
         "class_name": "A2AProxyHandler",

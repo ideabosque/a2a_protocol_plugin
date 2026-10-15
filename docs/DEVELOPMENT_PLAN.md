@@ -40,7 +40,7 @@ Keep in this plugin:
 | A2A gateway surface | `main.py`, `deploy()`, `dispatch_a2a`, `dispatch_agent_card`, A2A GraphQL action manifest. |
 | A2A protocol runtime | SDK server builder, JSON-RPC bridge, task store, executor, state mapping, push notification config, extended cards. |
 | A2A entities | Agent, task, message, setting GraphQL types/queries/mutations and entity repositories. |
-| A2A backend bridges | `a2a_proxy`, Hermes, Core Engine, OpenClaw, and the common handler resolution map. |
+| A2A backend bridges | `a2a_proxy`, Hermes, Core Engine, OpenClaw, Goose (planned, see [GOOSE_INTEGRATION_PLAN.md](GOOSE_INTEGRATION_PLAN.md)), and the common handler resolution map. |
 | A2A tests/docs | Existing protocol compliance, bridge, live, and PostgreSQL tests adapted to the new package name. |
 
 Move to or consume from `silvaengine_daemon`:
@@ -137,6 +137,11 @@ a2a_protocol_plugin/
 - Validate non-streaming, streaming, cancel, and approval/input continuation for
   each handler using mocked transports.
 - Run live optional tests where services are available.
+- Goose (`goose serve` over ACP-over-HTTP) is implemented as the fifth bridge
+  handler (`handlers/goose_handler.py` + `handlers/goose_acp_client.py`,
+  `agent_type: "goose"`); see [Goose Integration Development Plan](GOOSE_INTEGRATION_PLAN.md)
+  for the wire notes, and the docker-a2a-gateway `goose` profile + `tests/goose/*`
+  scripts for the deployment.
 
 ## Acceptance Criteria
 
