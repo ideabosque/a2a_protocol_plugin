@@ -87,6 +87,11 @@ class TestGooseLive:
 
     def test_streaming_round_trip_and_resume(self):
         h = _handler()
+        if h._setting_repo() is None:
+            pytest.skip(
+                "resume needs the a2a_setting repo layer (daemon/gateway env); "
+                "the docker-a2a-gateway E2E suite covers the PG-backed resume"
+            )
         first = h.ask_model(
             input_messages=[{"role": "user", "content": "Remember the word: bananahat. Reply with: remembered"}],
             context={"partition_key": "test#default", "thread_uuid": None},
