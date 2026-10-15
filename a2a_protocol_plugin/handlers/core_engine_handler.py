@@ -38,6 +38,7 @@ from typing import Any
 import httpx
 
 from .config import Config
+from .conversation_map import default_setting_repo, load_mapping, store_mapping
 
 __author__ = "bibow"
 
@@ -145,7 +146,20 @@ class CoreEngineAgentHandler:
             or self.default_agent_uuid
             or self.agent_config.get("agent_id")
         )
-        thread_uuid = context.get("thread_uuid") if isinstance(context, dict) else None
+        ctx = context if isinstance(context, dict) else {}
+        thread_uuid = ctx.get("thread_uuid")
+        # Without an explicit engine thread, continue the conversation the
+        # A2A contextId belongs to: context_id -> engine thread is mapped per
+        # tenant in a2a_settings. context_id itself is never sent to the
+        # engine — the engine only knows threads it created, and an unknown id
+        # fails with "Not found any thread".
+        context_id = ctx.get("context_id") if not thread_uuid else None
+        partition_key = ctx.get("partition_key")
+        if context_id and partition_key:
+            thread_uuid = load_mapping(
+                self._setting_repo(), partition_key,
+                self._setting_id(context_id), "thread_uuid", self.logger,
+            )
 
         user_query = ""
         if input_messages:
@@ -157,15 +171,36 @@ class CoreEngineAgentHandler:
             # its UUID via the askModel response. Do NOT mint a random UUID
             # here: the core engine would try to look it up and fail with
             # "Not found any thread" because it was never persisted.
-            return self._ask_streaming(
+            result = self._ask_streaming(
                 agent_uuid, thread_uuid or "", user_query, input_messages,
                 context, stream_queue, stream_event,
             )
-        # Non-streaming (GraphQL) path: pass thread_uuid as-is (None is OK).
-        # askModel will create a new thread when thread_uuid is None/empty.
-        return self._ask_non_streaming(
-            agent_uuid, thread_uuid, user_query, input_messages, context,
-        )
+        else:
+            # Non-streaming (GraphQL) path: pass thread_uuid as-is (None is
+            # OK). askModel creates a new thread when thread_uuid is None/empty.
+            result = self._ask_non_streaming(
+                agent_uuid, thread_uuid, user_query, input_messages, context,
+            )
+
+        if context_id and partition_key and isinstance(result, dict):
+            resolved = (result.get("metadata") or {}).get("thread_uuid")
+            if resolved and resolved != thread_uuid:
+                store_mapping(
+                    self._setting_repo(), partition_key,
+                    ctx.get("endpoint_id"), ctx.get("part_id"),
+                    self._setting_id(context_id),
+                    {"context_id": context_id, "thread_uuid": resolved},
+                    "core_engine_handler", self.logger,
+                )
+        return result
+
+    @staticmethod
+    def _setting_id(context_id: str) -> str:
+        return f"core_engine_thread#{context_id}"
+
+    @staticmethod
+    def _setting_repo() -> Any:
+        return default_setting_repo()
 
     # ------------------------------------------------------------------
     # Non-streaming path (GraphQL via gateway)

@@ -17,17 +17,17 @@ Endpoints used (wire details in handlers/goose_acp_client.py):
 Conversation design:
 - goose keeps the conversation history, so unlike Hermes/OpenClaw we send
   only the newest user turn on every call.
-- The A2A ``context_id`` (``context["thread_uuid"]``) is mapped to a goose
-  ``sessionId`` through a partition-scoped ``a2a_settings`` record
-  (``setting_id = "goose_session#{context_id}"``) via the repository
-  dispatch layer — the same pattern as ``DurablePushNotificationConfigStore``.
+- The conversation key — the caller's explicit ``context["thread_uuid"]``,
+  else the A2A ``context["context_id"]`` (the reply's ``contextId``, echoed
+  back by the client) — is mapped to a goose ``sessionId`` through a
+  partition-scoped ``a2a_settings`` record
+  (``setting_id = "goose_session#{key}"``, see ``conversation_map.py``).
   Client-supplied ids are NEVER passed to ``session/load`` unverified:
   goose sessions are not tenant-aware, so handing over any client-supplied
-  id would let one tenant resume another's conversation. Unknown ids and
+  id would let one tenant resume another's conversation. Unknown keys and
   failed loads simply start a new session.
-- The handler returns ``metadata.thread_uuid = goose sessionId`` so the
-  executor adopts the goose session as the conversation's ``context_id``
-  (``effective_context_id`` in ``a2a_executor.py``).
+- The handler also reports ``metadata.thread_uuid = goose sessionId`` for
+  diagnostics; the reply's ``contextId`` stays the conversation key.
 
 Streaming chunk names pushed to ``stream_queue``: ``run_id``, ``token``,
 ``tool_call``, ``tool_result``, ``approval``, ``error``. Reasoning deltas
@@ -64,6 +64,7 @@ import threading
 from typing import Any
 
 from .config import Config
+from .conversation_map import default_setting_repo, load_mapping, store_mapping
 from .goose_acp_client import GooseAcpClient, GooseAcpError
 
 __author__ = "bibow"
@@ -90,13 +91,6 @@ _PARTIAL_STOP_REASONS = {
     "max_tokens": "Goose hit the token limit (partial content)",
     "max_turn_requests": "Goose stopped: too many turn requests",
 }
-
-
-class _FakeInfo:
-    """Minimal ResolveInfo stand-in for the repository dispatch calls."""
-
-    def __init__(self, context: dict[str, Any]) -> None:
-        self.context = context
 
 
 class GooseAgentHandler:
@@ -598,12 +592,19 @@ class GooseAgentHandler:
     def _resolve_session_id(
         self, client: GooseAcpClient, context: dict[str, Any]
     ) -> str:
-        """Map the A2A context_id to a goose sessionId, or start a new one."""
+        """Map the conversation key to a goose sessionId, or start a new one.
+
+        The key is the caller's explicit ``thread_uuid`` when given, otherwise
+        the A2A ``context_id`` — the ``contextId`` the client echoes back from
+        the previous reply.
+        """
         partition_key = (
             context.get("partition_key") if isinstance(context, dict) else None
         )
         thread_uuid = (
-            context.get("thread_uuid") if isinstance(context, dict) else None
+            (context.get("thread_uuid") or context.get("context_id"))
+            if isinstance(context, dict)
+            else None
         )
 
         if thread_uuid and partition_key:
@@ -639,25 +640,13 @@ class GooseAgentHandler:
         return session_id
 
     def _load_session_mapping(self, partition_key: str, context_id: str) -> str | None:
-        try:
-            repo = self._setting_repo()
-            if repo is None:
-                return None
-            self._set_rls(partition_key)
-            row = repo.get(
-                partition_key=partition_key,
-                setting_id=self._setting_id(context_id),
-            )
-            if not row:
-                return None
-            setting = row.get("setting") if isinstance(row, dict) else None
-            if isinstance(setting, dict):
-                session_id = setting.get("session_id")
-                if isinstance(session_id, str) and session_id:
-                    return session_id
-        except Exception as e:
-            self.logger.warning("goose session mapping lookup failed: %s", e)
-        return None
+        return load_mapping(
+            self._setting_repo(),
+            partition_key,
+            self._setting_id(context_id),
+            "session_id",
+            self.logger,
+        )
 
     def _store_session_mapping(
         self,
@@ -667,31 +656,16 @@ class GooseAgentHandler:
         context_id: str,
         session_id: str,
     ) -> None:
-        try:
-            repo = self._setting_repo()
-            if repo is None:
-                self.logger.warning(
-                    "goose session mapping not persisted (no a2a_setting repo)"
-                )
-                return
-            self._set_rls(partition_key)
-            repo.insert_update(
-                _FakeInfo({"partition_key": partition_key, "logger": self.logger}),
-                partition_key=partition_key,
-                setting_id=self._setting_id(context_id),
-                endpoint_id=endpoint_id or str(partition_key).partition("#")[0],
-                part_id=part_id or "",
-                setting={
-                    "context_id": context_id,
-                    "session_id": session_id,
-                },
-                updated_by="goose_handler",
-            )
-        except Exception as e:
-            self.logger.warning(
-                "goose session mapping persistence failed (the session still "
-                "works for this turn; the next turn starts a fresh one): %s", e
-            )
+        store_mapping(
+            self._setting_repo(),
+            partition_key,
+            endpoint_id,
+            part_id,
+            self._setting_id(context_id),
+            {"context_id": context_id, "session_id": session_id},
+            "goose_handler",
+            self.logger,
+        )
 
     @staticmethod
     def _setting_id(context_id: str) -> str:
@@ -699,21 +673,7 @@ class GooseAgentHandler:
 
     @staticmethod
     def _setting_repo() -> Any:
-        try:
-            from silvaengine_daemon.repositories import get_repo
-
-            return get_repo("a2a_setting")
-        except Exception:
-            return None
-
-    @staticmethod
-    def _set_rls(partition_key: str) -> None:
-        # No-op in DynamoDB mode; sets the tenant row-security context in PG.
-        if (
-            getattr(Config, "DB_BACKEND", None) == "postgresql"
-            and getattr(Config, "db_session", None)
-        ):
-            Config._set_rls_context(partition_key)
+        return default_setting_repo()
 
     # ------------------------------------------------------------------
     # ACP updates -> A2A stream chunks

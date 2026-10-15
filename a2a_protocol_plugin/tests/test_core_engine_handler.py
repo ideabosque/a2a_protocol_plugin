@@ -74,6 +74,106 @@ def _make_handler(
     )
 
 
+class _MemorySettingRepo:
+    """In-memory, partition-scoped stand-in for the a2a_setting repository."""
+
+    def __init__(self):
+        self.rows = {}
+
+    def get(self, partition_key, setting_id):
+        return self.rows.get((partition_key, setting_id))
+
+    def insert_update(self, info, partition_key, setting_id, endpoint_id,
+                      part_id, setting, updated_by=None):
+        self.rows[(partition_key, setting_id)] = {"setting": setting}
+
+
+def _thread_capturing_gql(sent_threads: list):
+    """askModel mock recording the threadUuid sent; mints one when absent."""
+
+    def mock_gql(request: httpx.Request):
+        body = json.loads(request.content.decode())
+        query = body.get("query", "")
+        variables = body.get("variables", {})
+        if "askModel" in query and "query" in query.lower():
+            sent_threads.append(variables.get("threadUuid"))
+            return httpx.Response(200, json={"data": {"askModel": {
+                "agentUuid": variables["agentUuid"],
+                "threadUuid": variables.get("threadUuid") or "engine-thread-1",
+                "asyncTaskUuid": "task-abc",
+                "currentRunUuid": "run-abc",
+            }}})
+        if "asyncTask" in query:
+            return httpx.Response(200, json={
+                "data": {"asyncTask": {"result": "done", "status": "completed"}}})
+        if "messageList" in query:
+            return httpx.Response(200, json={"data": {"messageList": {"messageList": [
+                {"messageUuid": "m2", "messageId": "mid-2", "role": "assistant",
+                 "message": "ok"}]}}})
+        return httpx.Response(404, text="not found")
+
+    return httpx.MockTransport(mock_gql)
+
+
+class TestContextIdMapping:
+    """A2A contextId -> engine thread, per tenant (conversation_map)."""
+
+    def _ask(self, handler, **context):
+        return handler.ask_model(
+            input_messages=[{"role": "user", "content": "Hello"}],
+            context={"endpoint_id": "ep", "part_id": "p1", **context},
+        )
+
+    def _handler(self, logger, base_agent_config, sent_threads, repo):
+        handler = _make_handler(
+            logger, base_agent_config, transport=_thread_capturing_gql(sent_threads)
+        )
+        handler._setting_repo = lambda: repo
+        return handler
+
+    def test_first_turn_never_sends_context_id_as_thread(self, logger, base_agent_config):
+        sent, repo = [], _MemorySettingRepo()
+        handler = self._handler(logger, base_agent_config, sent, repo)
+
+        self._ask(handler, partition_key="ep#p1", context_id="ctx-1")
+
+        assert sent == [None], "an unknown contextId must not reach the engine"
+        stored = repo.rows[("ep#p1", "core_engine_thread#ctx-1")]["setting"]
+        assert stored["thread_uuid"] == "engine-thread-1"
+
+    def test_echoed_context_id_resumes_engine_thread(self, logger, base_agent_config):
+        sent, repo = [], _MemorySettingRepo()
+        self._ask(self._handler(logger, base_agent_config, sent, repo),
+                  partition_key="ep#p1", context_id="ctx-1")
+
+        self._ask(self._handler(logger, base_agent_config, sent, repo),
+                  partition_key="ep#p1", context_id="ctx-1")
+
+        assert sent == [None, "engine-thread-1"]
+
+    def test_context_id_from_another_tenant_starts_new_thread(
+        self, logger, base_agent_config
+    ):
+        sent, repo = [], _MemorySettingRepo()
+        self._ask(self._handler(logger, base_agent_config, sent, repo),
+                  partition_key="ep#tenant-a", context_id="ctx-1")
+
+        self._ask(self._handler(logger, base_agent_config, sent, repo),
+                  partition_key="ep#tenant-b", context_id="ctx-1")
+
+        assert sent == [None, None]
+
+    def test_explicit_thread_uuid_bypasses_mapping(self, logger, base_agent_config):
+        sent, repo = [], _MemorySettingRepo()
+        handler = self._handler(logger, base_agent_config, sent, repo)
+
+        self._ask(handler, partition_key="ep#p1", thread_uuid="engine-thread-7",
+                  context_id="ctx-1")
+
+        assert sent == ["engine-thread-7"]
+        assert repo.rows == {}
+
+
 class TestNonStreaming:
     def test_non_streaming_basic(self, logger, base_agent_config):
         """Mock GraphQL: askModel → asyncTask (poll) → messageList."""

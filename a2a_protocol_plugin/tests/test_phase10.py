@@ -482,6 +482,56 @@ class TestNormalizeFinalOutput:
 
 
 @pytest.mark.asyncio
+class TestConversationKey:
+    """thread_uuid (explicit) else the A2A context_id keys history/persistence."""
+
+    async def _run(self, mock_a2a_core, mock_logger, **kwargs):
+        handler = MagicMock()
+        handler.ask_model = MagicMock(return_value={"content": "hello", "role": "agent"})
+        with patch(
+            "a2a_protocol_plugin.handlers.a2a_ai_agent_utility.Config.a2a_core",
+            mock_a2a_core,
+        ), patch(
+            "a2a_protocol_plugin.handlers.a2a_ai_agent_utility.load_agent_handler",
+            return_value=handler,
+        ):
+            result = await execute_ai_agent_non_streaming(
+                partition_key="ep#part",
+                agent_uuid="test-agent-001",
+                user_query="hi",
+                logger=mock_logger,
+                **kwargs,
+            )
+        assert result.error is None
+        return handler.ask_model.call_args.kwargs["context"]
+
+    async def test_context_id_keys_history_and_persistence(
+        self, mock_a2a_core, mock_logger
+    ):
+        context = await self._run(mock_a2a_core, mock_logger, context_id="ctx-9")
+
+        mock_a2a_core.get_a2a_messages.assert_awaited_once()
+        assert mock_a2a_core.get_a2a_messages.await_args.kwargs["thread_id"] == "ctx-9"
+        persisted = [
+            c.kwargs["context_id"]
+            for c in mock_a2a_core.insert_update_a2a_message.await_args_list
+        ]
+        assert persisted == ["ctx-9", "ctx-9"]  # user message + agent reply
+        # The handler gets the A2A context id, never as a backend thread id.
+        assert context["context_id"] == "ctx-9"
+        assert "thread_uuid" not in context
+
+    async def test_explicit_thread_uuid_wins(self, mock_a2a_core, mock_logger):
+        context = await self._run(
+            mock_a2a_core, mock_logger, thread_uuid="t-1", context_id="ctx-9"
+        )
+
+        assert mock_a2a_core.get_a2a_messages.await_args.kwargs["thread_id"] == "t-1"
+        assert context["thread_uuid"] == "t-1"
+        assert context["context_id"] == "ctx-9"
+
+
+@pytest.mark.asyncio
 class TestExecuteAiAgentNonStreaming:
     async def test_non_streaming_success(self, mock_a2a_core, mock_logger):
         handler = MagicMock()

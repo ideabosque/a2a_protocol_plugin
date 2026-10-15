@@ -607,17 +607,16 @@ class A2ADaemonExecutor(AgentExecutor):
             task_id = ""
             task_type = "message_response"
 
-            # A2A context_id groups the tasks/messages of one conversation, and
-            # is the thread key handed to the agent handler — which is what
-            # makes multi-turn history work.
-            #
-            # It is deliberately NOT invented here. For the core-engine bridge
-            # the context IS the engine's thread_uuid, and that thread is
-            # created by the engine: passing a locally-minted UUID would fail
-            # with "Not found any thread" on the next turn. So on the first turn
-            # this is None (the engine opens a thread and returns its id, which
-            # we adopt as the context_id below); afterwards the client echoes it
-            # back and we reuse it.
+            # Conversation keys:
+            # - context_id: the A2A contextId — the client's message.contextId,
+            #   or the id the SDK generated on the first turn. It groups this
+            #   conversation's tasks/messages and is handed to the bridge as
+            #   ``context_id``. Backends that mint their own ids (core engine
+            #   threads, goose sessions) map it to those ids per tenant; it is
+            #   never passed to them as a backend id.
+            # - core_thread_uuid: an explicit backend thread id the caller put
+            #   in call-context state (metadata.thread_uuid / contextId). It
+            #   wins over context_id and is passed through unchanged.
             context_id = _context_get_any(
                 request_context,
                 "context_id",
@@ -691,11 +690,17 @@ class A2ADaemonExecutor(AgentExecutor):
                     thread_uuid=core_thread_uuid,
                     logger=self.logger,
                     task_id=task_id,
+                    context_id=context_id,
                 )
-                # Adopt the thread the agent handler used as this
-                # conversation's context_id, so the next turn resumes it.
-                effective_context_id = context_id or (result.metadata or {}).get(
-                    "thread_uuid"
+                # Fix (2026-10-15): the reply's contextId is the conversation
+                # key the bridge used (explicit thread_uuid, else the A2A
+                # context_id), so echoing it back continues the same
+                # conversation. Previously message.contextId never reached the
+                # handler, and every turn started a new conversation.
+                effective_context_id = (
+                    core_thread_uuid
+                    or context_id
+                    or (result.metadata or {}).get("thread_uuid")
                 )
 
                 # DEF-005 fix (2026-09-03): the SDK request handler generates
@@ -860,11 +865,9 @@ class A2ADaemonExecutor(AgentExecutor):
                 "run_id",
             )
             # A2A context_id — the conversation this task belongs to. Same
-            # contract as _handle_message_response: never minted locally (the
-            # agent handler's backend owns the thread and returns its id, which
-            # we adopt below). For the core-engine bridge the context IS the
-            # engine's thread, so an explicit thread_uuid wins and the
-            # context_id serves as the thread key otherwise.
+            # contract as _handle_message_response: an explicit thread_uuid
+            # (or call-state contextId) is the backend thread id and wins;
+            # otherwise the bridge gets context_id as the conversation key.
             context_id = _context_get_any(
                 request_context,
                 "context_id",
@@ -940,11 +943,14 @@ class A2ADaemonExecutor(AgentExecutor):
                         logger=self.logger,
                         on_run_id=self._on_external_run_id,
                         task_id=task_id,
+                        context_id=context_id,
                     )
-                    # Adopt the thread the agent handler used as this
-                    # conversation's context_id, so the next turn resumes it.
-                    effective_context_id = context_id or (result.metadata or {}).get(
-                        "thread_uuid"
+                    # The conversation key the bridge used is the contextId
+                    # (same rule as _handle_message_response).
+                    effective_context_id = (
+                        thread_uuid
+                        or context_id
+                        or (result.metadata or {}).get("thread_uuid")
                     )
                     if result.error:
                         await _emit_event(
@@ -993,12 +999,15 @@ class A2ADaemonExecutor(AgentExecutor):
                         run_uuid=run_uuid,
                         logger=self.logger,
                         task_id=task_id,
+                        context_id=context_id,
                     )
 
-                # Adopt the thread the agent handler used as this
-                # conversation's context_id, so the next turn resumes it.
-                effective_context_id = context_id or (result.metadata or {}).get(
-                    "thread_uuid"
+                # The conversation key the bridge used is the contextId
+                # (same rule as _handle_message_response).
+                effective_context_id = (
+                    thread_uuid
+                    or context_id
+                    or (result.metadata or {}).get("thread_uuid")
                 )
 
                 if result.error:

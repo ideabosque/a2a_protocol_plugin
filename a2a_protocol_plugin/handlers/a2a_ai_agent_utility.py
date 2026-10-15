@@ -509,6 +509,7 @@ def _apply_thread_context(
     context: dict[str, Any],
     thread_uuid: str | None,
     run_uuid: str | None = None,
+    context_id: str | None = None,
 ) -> None:
     """Publish the conversation keys onto the handler context.
 
@@ -518,13 +519,18 @@ def _apply_thread_context(
     instead of opening a fresh thread on every turn. ``create_core_engine_context``
     does not carry it, so without this the conversation has no memory.
 
-    The A2A ``context_id`` is what gets passed in as ``thread_uuid`` — the two
-    identify the same conversation on either side of the bridge.
+    ``thread_uuid`` is only ever the caller's explicit backend thread id.
+    ``context_id`` is the A2A conversation id (the ``contextId`` the client
+    echoes back). Handlers whose backend mints its own ids (goose, core engine)
+    map ``context_id`` to that id per tenant (see ``conversation_map.py``)
+    rather than treating it as a backend id.
     """
     if not isinstance(context, dict):
         return
     if thread_uuid:
         context["thread_uuid"] = thread_uuid
+    if context_id:
+        context["context_id"] = context_id
     if run_uuid:
         context["run_uuid"] = run_uuid
 
@@ -715,6 +721,7 @@ async def execute_ai_agent_non_streaming(
     run_uuid: str | None = None,
     logger: logging.Logger | None = None,
     task_id: str | None = None,
+    context_id: str | None = None,
 ) -> BridgeResult:
     """
     Full non-streaming lifecycle: resolve agent, load handler, build messages,
@@ -736,12 +743,15 @@ async def execute_ai_agent_non_streaming(
         _logger.error(f"Failed to load handler: {e}", exc_info=True)
         return BridgeResult(error=f"Handler import failed: {e}")
 
-    # 3. Build messages
+    # 3. Build messages. History is stored per conversation: the explicit
+    # thread_uuid when the caller sent one, else the A2A context_id the client
+    # echoes back from the previous reply.
+    conversation_id = thread_uuid or context_id
     num_of_messages = agent_config.get("num_of_messages", 10)
     tool_call_role = agent_config.get("tool_call_role", "tool")
     messages = await build_input_messages(
         partition_key=partition_key,
-        thread_uuid=thread_uuid,
+        thread_uuid=conversation_id,
         num_of_messages=num_of_messages,
         tool_call_role=tool_call_role,
         user_query=user_query,
@@ -756,12 +766,12 @@ async def execute_ai_agent_non_streaming(
         part_id=part_id,
         logger=_logger,
     )
-    _apply_thread_context(context, thread_uuid, run_uuid)
+    _apply_thread_context(context, thread_uuid, run_uuid, context_id)
 
     # 5. Persist the user's message so conversation history includes it
     await _persist_user_message(
         partition_key=partition_key,
-        thread_uuid=thread_uuid,
+        thread_uuid=conversation_id,
         user_query=user_query,
         task_id=task_id,
         logger=_logger,
@@ -794,7 +804,7 @@ async def execute_ai_agent_non_streaming(
     # 8. Persist agent response
     await _persist_thread_run_message(
         partition_key=partition_key,
-        thread_uuid=thread_uuid,
+        thread_uuid=conversation_id,
         run_uuid=run_uuid,
         message_id=result.message_id,
         role=result.role,
@@ -824,6 +834,7 @@ async def execute_ai_agent_streaming(
     logger: logging.Logger | None = None,
     on_run_id: Any = None,
     task_id: str | None = None,
+    context_id: str | None = None,
 ) -> BridgeResult:
     """
     Full streaming lifecycle with dual-path emission.
@@ -853,12 +864,15 @@ async def execute_ai_agent_streaming(
         _logger.error(f"Failed to load handler: {e}", exc_info=True)
         return BridgeResult(error=f"Handler import failed: {e}")
 
-    # 3. Build messages
+    # 3. Build messages. History is stored per conversation: the explicit
+    # thread_uuid when the caller sent one, else the A2A context_id the client
+    # echoes back from the previous reply.
+    conversation_id = thread_uuid or context_id
     num_of_messages = agent_config.get("num_of_messages", 10)
     tool_call_role = agent_config.get("tool_call_role", "tool")
     messages = await build_input_messages(
         partition_key=partition_key,
-        thread_uuid=thread_uuid,
+        thread_uuid=conversation_id,
         num_of_messages=num_of_messages,
         tool_call_role=tool_call_role,
         user_query=user_query,
@@ -873,12 +887,12 @@ async def execute_ai_agent_streaming(
         part_id=part_id,
         logger=_logger,
     )
-    _apply_thread_context(context, thread_uuid, run_uuid)
+    _apply_thread_context(context, thread_uuid, run_uuid, context_id)
 
     # 5. Persist the user's message so conversation history includes it
     await _persist_user_message(
         partition_key=partition_key,
-        thread_uuid=thread_uuid,
+        thread_uuid=conversation_id,
         user_query=user_query,
         task_id=task_id,
         logger=_logger,
@@ -1049,19 +1063,20 @@ async def execute_ai_agent_streaming(
 
             result.message_id = f"msg-{_uuid.uuid4().hex}"
 
-        # The backend may have created the thread on this turn and returned its
-        # id in metadata; that resolved id is the conversation's contextId. Fall
-        # back to the inbound thread_uuid when the backend didn't report one.
-        effective_thread_uuid = thread_uuid or result.metadata.get("thread_uuid")
+        # The conversation key is the reply's contextId: the explicit
+        # thread_uuid, else the A2A context_id (the same rule as the
+        # non-streaming path, so both return the id the client echoes back).
+        # A backend-reported thread id is only the last resort; stateful
+        # backends map the conversation key to their own id themselves.
+        effective_thread_uuid = conversation_id or result.metadata.get("thread_uuid")
 
         # Emit the single accumulated agent Message to the SDK EventQueue.
         # This must be one Message only — the A2A SDK v2 raises
         # InvalidAgentResponseError if multiple Message objects are emitted.
         # Status events (WORKING/COMPLETED) are NOT emitted to the SDK
         # EventQueue because on_message_send rejects TaskStatusUpdateEvent.
-        # Stamp the reply with the resolved thread id so the client learns the
-        # contextId to echo back on the next turn (otherwise the backend opens a
-        # fresh thread every turn and re-greets).
+        # Stamp the reply with the conversation key so the client learns the
+        # contextId to echo back on the next turn.
         if final_content:
             await _emit_to_sdk(
                 event_queue, final_content, _logger, context_id=effective_thread_uuid
@@ -1073,8 +1088,8 @@ async def execute_ai_agent_streaming(
             partition_key=partition_key,
         )
 
-        # Persist under the resolved thread id so the conversation record links
-        # to the backend's real thread (not None on the first turn).
+        # Persist under the conversation key so the next turn's history lookup
+        # (keyed the same way) finds this reply.
         await _persist_thread_run_message(
             partition_key=partition_key,
             thread_uuid=effective_thread_uuid,

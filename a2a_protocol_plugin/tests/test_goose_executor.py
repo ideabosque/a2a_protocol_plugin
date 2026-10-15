@@ -9,7 +9,9 @@ test_goose_handler.py) and ``a2a_core`` persistence mocked.
 
 Covers what the handler-level suite cannot: the executor wiring between a
 JSON-RPC ``message/send`` and ``GooseAgentHandler`` — the reply, conversation
-resume across turns, and tenant isolation of the session mapping.
+resume across turns (via an echoed ``contextId`` or an explicit
+``metadata.thread_uuid``), the reply's ``contextId``, and tenant isolation of
+the session mapping.
 
 ``tasks/get`` / ``tasks/cancel`` are not covered here: they depend on the
 repository-backed task store, which the docker live suite exercises
@@ -153,17 +155,31 @@ class TestGooseThroughExecutor:
         assert harness.server.load_calls == [], "must not load tenant-a's session"
         assert harness.session_news == 2
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Known gap: message.contextId is not forwarded to the handler as "
-        "thread_uuid, so echoing the returned contextId starts a new goose "
-        "session. Clients must send metadata.thread_uuid today.",
-    )
     def test_returned_context_id_resumes_goose_session(self, harness):
         first = harness.send("Hi", message_id="m1")
         context_id = first["result"]["contextId"]
+        stored = harness.rows[("ep#p1", f"goose_session#{context_id}")]["setting"]
 
-        harness.send("Again", message_id="m2", context_id=context_id)
+        second = harness.send("Again", message_id="m2", context_id=context_id)
 
-        assert harness.session_news == 1
-        assert len(harness.server.load_calls) == 1
+        assert "error" not in second, second
+        assert second["result"]["contextId"] == context_id
+        assert harness.session_news == 1, "echoed contextId must resume, not reopen"
+        assert harness.server.load_calls == [stored["session_id"]]
+
+    def test_echoed_context_id_from_another_tenant_starts_new_session(self, harness):
+        first = harness.send("Hi", partition_key="ep#tenant-a", message_id="m1")
+        context_id = first["result"]["contextId"]
+
+        harness.send("Hi", partition_key="ep#tenant-b", message_id="m2",
+                     context_id=context_id)
+
+        assert harness.server.load_calls == [], "must not load tenant-a's session"
+        assert harness.session_news == 2
+
+    def test_reply_context_id_is_the_explicit_thread_uuid(self, harness):
+        response = harness.send("Hi", message_id="m1", thread_uuid="thread-9")
+
+        # Echoing the reply's contextId must land on the same conversation as
+        # resending thread_uuid, so the reply carries the thread_uuid.
+        assert response["result"]["contextId"] == "thread-9"
