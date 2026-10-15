@@ -406,7 +406,7 @@ async def update_a2a_task(
             $taskId: String,
             $endpointId: String!,
             $partId: String!,
-            $taskType: String,
+            $taskType: String!,
             $assignedAgentId: String,
             $status: String,
             $priority: String,
