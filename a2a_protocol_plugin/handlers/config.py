@@ -14,6 +14,7 @@ __author__ = "bibow"
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
@@ -175,6 +176,10 @@ class Config:
     a2a_default_agent_uuid: str | None = None
     a2a_stream_timeout: float = 120.0
     a2a_streaming_enabled: bool = True
+    # Stream the model's reasoning (tagged, separate from the answer) to SSE
+    # clients and keep it in reply metadata. Overridable per agent
+    # (metadata.show_reasoning) and per request (params.metadata.show_reasoning).
+    a2a_show_reasoning: bool = True
     phase10_available: bool = False
 
     # Phase 10: Hermes Agent API bridge settings
@@ -266,6 +271,17 @@ class Config:
         cls.a2a_stream_timeout = float(setting.get("A2A_STREAM_TIMEOUT", setting.get("a2a_stream_timeout", 120.0)))
         cls.a2a_streaming_enabled = _truthy(
             setting.get("A2A_STREAMING_ENABLED", setting.get("a2a_streaming_enabled", True))
+        )
+        # os.environ fallback: older gateway builds do not forward every
+        # A2A_* key into the setting dict (same gap as GOOSE_*).
+        cls.a2a_show_reasoning = _truthy(
+            setting.get(
+                "A2A_SHOW_REASONING",
+                setting.get(
+                    "a2a_show_reasoning",
+                    os.environ.get("A2A_SHOW_REASONING", True),
+                ),
+            )
         )
 
         # Hermes Agent API bridge settings

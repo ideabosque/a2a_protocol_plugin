@@ -240,6 +240,18 @@ class HermesAgentHandler:
                             # with the final answer text after the deltas, so
                             # treating it as answer content duplicates the reply.
                             reasoning_text = event.get("text") or event.get("delta", "")
+                            # Fix (2026-10-15): with show_reasoning off on the
+                            # Hermes side, reasoning.available carries a copy
+                            # of the final answer (verified live), which
+                            # rendered the answer twice as "reasoning". Drop a
+                            # reasoning.available that only repeats the answer.
+                            if (
+                                event_type == "reasoning.available"
+                                and reasoning_text
+                                and " ".join(reasoning_text.split())
+                                == " ".join("".join(chunks).split())
+                            ):
+                                reasoning_text = ""
                             if reasoning_text:
                                 stream_queue.put({
                                     "name": "token",

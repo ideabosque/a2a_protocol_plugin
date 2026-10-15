@@ -212,6 +212,18 @@ class OpenClawAgentHandler:
                             continue
                         delta = choices[0].get("delta", {}) or {}
 
+                        # Reasoning deltas (OpenAI-compatible servers use
+                        # reasoning_content or reasoning) -> tagged tokens,
+                        # kept out of the answer. OpenClaw sends none today;
+                        # this renders it as soon as the backend does.
+                        reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
+                        if isinstance(reasoning_delta, str) and reasoning_delta:
+                            stream_queue.put({
+                                "name": "token",
+                                "value": reasoning_delta,
+                                "meta": {"data_format": "reasoning"},
+                            })
+
                         # Text deltas -> A2A token chunks
                         delta_content = delta.get("content", "")
                         if delta_content:

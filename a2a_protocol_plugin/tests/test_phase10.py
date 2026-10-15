@@ -653,6 +653,86 @@ class TestExecuteAiAgentNonStreaming:
         assert mock_a2a_core.insert_update_a2a_message.await_count == 2
 
 
+class TestResolveShowReasoning:
+    def test_default_follows_config(self, monkeypatch):
+        from a2a_protocol_plugin.handlers.a2a_ai_agent_utility import (
+            resolve_show_reasoning,
+        )
+        from a2a_protocol_plugin.handlers.config import Config
+
+        monkeypatch.setattr(Config, "a2a_show_reasoning", True)
+        assert resolve_show_reasoning({"metadata": {}}) is True
+        monkeypatch.setattr(Config, "a2a_show_reasoning", False)
+        assert resolve_show_reasoning({"metadata": {}}) is False
+
+    def test_agent_overrides_config_and_request_overrides_agent(self, monkeypatch):
+        from a2a_protocol_plugin.handlers.a2a_ai_agent_utility import (
+            resolve_show_reasoning,
+        )
+        from a2a_protocol_plugin.handlers.config import Config
+
+        monkeypatch.setattr(Config, "a2a_show_reasoning", True)
+        agent = {"metadata": {"show_reasoning": "false"}}
+        assert resolve_show_reasoning(agent) is False
+        assert resolve_show_reasoning(agent, request_value=True) is True
+        assert resolve_show_reasoning({"metadata": {}}, request_value="0") is False
+
+
+@pytest.mark.asyncio
+class TestStreamingShowReasoning:
+    async def _run(self, mock_a2a_core, mock_logger, show_reasoning):
+        handler = MagicMock()
+
+        def _ask_model(**kwargs):
+            q = kwargs.get("stream_queue")
+            q.put({"name": "token", "value": "Think first.",
+                   "meta": {"data_format": "reasoning"}})
+            q.put({"name": "token", "value": "Answer."})
+            kwargs.get("stream_event").set()
+
+        handler.ask_model = _ask_model
+        streaming_mgr = AsyncMock()
+        with patch(
+            "a2a_protocol_plugin.handlers.a2a_ai_agent_utility.Config.a2a_core",
+            mock_a2a_core,
+        ), patch(
+            "a2a_protocol_plugin.handlers.a2a_ai_agent_utility.load_agent_handler",
+            return_value=handler,
+        ):
+            result = await execute_ai_agent_streaming(
+                partition_key="ep#part",
+                agent_uuid="test-agent-001",
+                user_query="hi",
+                event_queue=MagicMock(),
+                streaming_manager=streaming_mgr,
+                thread_uuid="t-1",
+                stream_timeout=5.0,
+                logger=mock_logger,
+                show_reasoning=show_reasoning,
+            )
+        streamed = " ".join(
+            str(c) for c in streaming_mgr.emit_task_artifact.await_args_list
+        )
+        return result, streamed
+
+    async def test_reasoning_streamed_and_returned_when_on(
+        self, mock_a2a_core, mock_logger
+    ):
+        result, streamed = await self._run(mock_a2a_core, mock_logger, True)
+
+        assert result.content == "Answer."
+        assert result.metadata["reasoning"] == "Think first."
+        assert "Think first." in streamed
+
+    async def test_reasoning_dropped_when_off(self, mock_a2a_core, mock_logger):
+        result, streamed = await self._run(mock_a2a_core, mock_logger, False)
+
+        assert result.content == "Answer."
+        assert "reasoning" not in result.metadata
+        assert "Think first." not in streamed
+        assert "Answer." in streamed
+
+
 @pytest.mark.asyncio
 class TestExecuteAiAgentStreaming:
     async def test_streaming_success(self, mock_a2a_core, mock_logger):

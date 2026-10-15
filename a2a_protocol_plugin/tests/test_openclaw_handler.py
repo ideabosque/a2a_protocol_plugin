@@ -188,6 +188,30 @@ class TestStreaming:
         )
         assert result["content"] == "Hello World"
 
+    @pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
+    def test_streaming_reasoning_deltas_are_tagged(self, logger, base_agent_config, field):
+        def mock_openclaw(request: httpx.Request):
+            lines = [
+                "data: " + json.dumps({"choices": [{"delta": {field: "Think first."}}]}),
+                "data: " + json.dumps({"choices": [{"delta": {"content": "Answer."}}]}),
+                "data: [DONE]",
+            ]
+            return httpx.Response(200, content=("\n".join(lines) + "\n").encode("utf-8"))
+
+        handler = _make_handler(logger, base_agent_config, httpx.MockTransport(mock_openclaw))
+        q = queue.Queue()
+        result = handler.ask_model(
+            input_messages=[{"role": "user", "content": "hi"}],
+            context={},
+            stream_queue=q,
+            stream_event=threading.Event(),
+        )
+
+        tokens = [item for item in list(q.queue) if item["name"] == "token"]
+        assert result["content"] == "Answer.", "reasoning must stay out of the answer"
+        assert [t["value"] for t in tokens if t.get("meta")] == ["Think first."]
+        assert tokens[0]["meta"] == {"data_format": "reasoning"}
+
     def test_streaming_done_termination(self, logger, base_agent_config):
         """Verify [DONE] sentinel terminates the stream."""
         def mock_openclaw(request: httpx.Request):

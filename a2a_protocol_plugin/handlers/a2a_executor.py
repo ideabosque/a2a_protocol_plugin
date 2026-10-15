@@ -691,6 +691,9 @@ class A2ADaemonExecutor(AgentExecutor):
                     logger=self.logger,
                     task_id=task_id,
                     context_id=context_id,
+                    show_reasoning=_context_state_get_any(
+                        request_context, "show_reasoning", "showReasoning"
+                    ),
                 )
                 # Fix (2026-10-15): the reply's contextId is the conversation
                 # key the bridge used (explicit thread_uuid, else the A2A
@@ -944,6 +947,9 @@ class A2ADaemonExecutor(AgentExecutor):
                         on_run_id=self._on_external_run_id,
                         task_id=task_id,
                         context_id=context_id,
+                        show_reasoning=_context_state_get_any(
+                            request_context, "show_reasoning", "showReasoning"
+                        ),
                     )
                     # The conversation key the bridge used is the contextId
                     # (same rule as _handle_message_response).
@@ -1000,6 +1006,9 @@ class A2ADaemonExecutor(AgentExecutor):
                         logger=self.logger,
                         task_id=task_id,
                         context_id=context_id,
+                        show_reasoning=_context_state_get_any(
+                            request_context, "show_reasoning", "showReasoning"
+                        ),
                     )
 
                 # The conversation key the bridge used is the contextId

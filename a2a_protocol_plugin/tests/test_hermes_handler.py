@@ -212,8 +212,41 @@ class TestStreaming:
         answer = [t["value"] for t in tokens if not t.get("meta")]
         reasoning = [t for t in tokens if t.get("meta")]
         assert "".join(answer) == "Your name is Bob."
-        assert len(reasoning) == 1
-        assert reasoning[0]["meta"] == {"data_format": "reasoning"}
+        # A reasoning.available that only repeats the answer is not reasoning;
+        # rendering it would show the answer twice.
+        assert reasoning == []
+
+    def test_streaming_real_reasoning_is_tagged(self, logger, base_agent_config):
+        run_id = "run_real_reasoning"
+
+        def mock_hermes(request: httpx.Request):
+            if request.method == "POST":
+                return httpx.Response(200, json={"run_id": run_id})
+            events = [
+                {"event": "reasoning.delta", "delta": "391 = 17 x 23."},
+                {"event": "message.delta", "delta": "No."},
+                {"event": "reasoning.available", "text": "Checked small primes."},
+                {"event": "run.completed"},
+            ]
+            body = "\n".join("data: " + json.dumps(e) for e in events) + "\n"
+            return httpx.Response(200, content=body.encode("utf-8"))
+
+        handler = _make_handler(logger, base_agent_config, httpx.MockTransport(mock_hermes))
+        q = queue.Queue()
+        result = handler.ask_model(
+            input_messages=[{"role": "user", "content": "Is 391 prime?"}],
+            context={},
+            stream_queue=q,
+            stream_event=threading.Event(),
+        )
+
+        tokens = [item for item in list(q.queue) if item["name"] == "token"]
+        reasoning = [t["value"] for t in tokens if t.get("meta")]
+        assert result["content"] == "No."
+        assert reasoning == ["391 = 17 x 23.", "Checked small primes."]
+        assert all(
+            t["meta"] == {"data_format": "reasoning"} for t in tokens if t.get("meta")
+        )
 
     def test_streaming_tool_call(self, logger, base_agent_config):
         run_id = "run_tool"

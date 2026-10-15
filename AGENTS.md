@@ -101,8 +101,12 @@ def cancel_run(self, run_id: str) -> bool: ...                      # cancellati
 def resolve_approval(self, run_id, approved, reason="") -> bool: ...  # optional, approvals
 ```
 
-When `stream_queue` is given, push chunks to it and set `stream_event` when done. Tag reasoning
-chunks as reasoning (see `_is_reasoning_meta`) so they are not duplicated in the final reply.
+When `stream_queue` is given, push chunks to it and set `stream_event` when done. Push reasoning
+as `{"name": "token", "value": ..., "meta": {"data_format": "reasoning"}}` (see
+`_is_reasoning_meta`): the bridge keeps it out of the answer, streams it as tagged SSE chunks and
+returns it as `metadata.reasoning` — unless `show_reasoning` is off (`resolve_show_reasoning`:
+request `metadata.show_reasoning` > agent metadata `show_reasoning` > `A2A_SHOW_REASONING`,
+default on), in which case it is dropped. Never push a copy of the answer as reasoning.
 Use `hermes_handler.py` / `openclaw_handler.py` / `goose_handler.py` as references;
 register test agents with
 `tests/register_*_agent.py`.

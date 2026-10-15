@@ -137,6 +137,24 @@ def _is_reasoning_meta(meta: dict[str, Any] | None) -> bool:
     return False
 
 
+def resolve_show_reasoning(
+    agent_config: dict[str, Any] | None, request_value: Any = None
+) -> bool:
+    """Whether the model's reasoning reaches the client for this turn.
+
+    Priority: the request (``params.metadata.show_reasoning``) > the agent
+    (agent metadata ``show_reasoning``) > ``Config.a2a_show_reasoning``
+    (``A2A_SHOW_REASONING``, default on). Reasoning never enters the answer
+    either way; this only decides whether it is streamed and returned.
+    """
+    metadata = (agent_config or {}).get("metadata") if agent_config else None
+    agent_value = metadata.get("show_reasoning") if isinstance(metadata, dict) else None
+    for value in (request_value, agent_value):
+        if value is not None and value != "":
+            return _truthy(value)
+    return bool(getattr(Config, "a2a_show_reasoning", True))
+
+
 # ---------------------------------------------------------------------------
 # 10.1.1 Agent resolution
 # ---------------------------------------------------------------------------
@@ -722,6 +740,7 @@ async def execute_ai_agent_non_streaming(
     logger: logging.Logger | None = None,
     task_id: str | None = None,
     context_id: str | None = None,
+    show_reasoning: Any = None,
 ) -> BridgeResult:
     """
     Full non-streaming lifecycle: resolve agent, load handler, build messages,
@@ -796,6 +815,8 @@ async def execute_ai_agent_non_streaming(
 
     # 7. Normalize
     result = normalize_final_output(raw_output)
+    if not resolve_show_reasoning(agent_config, show_reasoning):
+        result.metadata.pop("reasoning", None)
     if not result.message_id:
         import uuid as _uuid
 
@@ -835,6 +856,7 @@ async def execute_ai_agent_streaming(
     on_run_id: Any = None,
     task_id: str | None = None,
     context_id: str | None = None,
+    show_reasoning: Any = None,
 ) -> BridgeResult:
     """
     Full streaming lifecycle with dual-path emission.
@@ -899,6 +921,7 @@ async def execute_ai_agent_streaming(
     )
 
     # 6. Prepare streaming primitives
+    include_reasoning = resolve_show_reasoning(agent_config, show_reasoning)
     stream_queue: _queue.Queue[Any] = _queue.Queue()
     stream_event = threading.Event()
 
@@ -1019,6 +1042,10 @@ async def execute_ai_agent_streaming(
                 # and surfaced as metadata["reasoning"] below. Both still stream
                 # to SSE (tagged), so clients can render them separately.
                 if _is_reasoning_meta(parsed.meta):
+                    if not include_reasoning:
+                        # show_reasoning off: drop it — not streamed, not
+                        # returned. The answer is unaffected.
+                        continue
                     state.reasoning_chunks.append(parsed.value)
                 else:
                     state.chunks.append(parsed.value)
