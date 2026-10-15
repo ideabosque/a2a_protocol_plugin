@@ -28,7 +28,8 @@ a2a_protocol_plugin/
     a2a_pushconfig*.py    Durable push configs (stored in a2a_settings) + SSRF URL validator
     a2a_jsonrpc_bridge.py JSON-RPC dict <-> SDK protobuf request/response conversion
     a2a_core.py, a2a_utility.py, a2a_handlers.py  Persistence helpers / legacy operations
-    core_engine_handler.py, hermes_handler.py, openclaw_handler.py  Agent handlers
+    core_engine_handler.py, hermes_handler.py, openclaw_handler.py,
+goose_handler.py (+ goose_acp_client.py)  Agent handlers
   models/{dynamodb,postgresql}/      Backend models (pynamodb / SQLAlchemy)
   models/repositories/{dynamodb,postgresql}/  Repo classes registered with silvaengine_daemon
   queries/, mutations/, types/       GraphQL resolvers and types, one file per entity
@@ -93,7 +94,8 @@ def resolve_approval(self, run_id, approved, reason="") -> bool: ...  # optional
 
 When `stream_queue` is given, push chunks to it and set `stream_event` when done. Tag reasoning
 chunks as reasoning (see `_is_reasoning_meta`) so they are not duplicated in the final reply.
-Use `hermes_handler.py` / `openclaw_handler.py` as references; register test agents with
+Use `hermes_handler.py` / `openclaw_handler.py` / `goose_handler.py` as references;
+register test agents with
 `tests/register_*_agent.py`.
 
 ## Setup and tests

@@ -1,6 +1,6 @@
 # Goose Integration Development Plan
 
-Status: implemented (G1-G4 done; G5 in docker-a2a-gateway)
+Status: implemented (G1-G6 complete, 2026-10-15)
 Last updated: 2026-10-15
 Related: [A2A Protocol Plugin Development Plan](DEVELOPMENT_PLAN.md)
 
@@ -329,6 +329,19 @@ that differ from (or pin down) the draft RFD:
 - `session/cancel` (notification) resolves the pending prompt promptly
   (~1.2 s observed mid-run). Cancelling before the run starts is a no-op,
   the same class of edge as OpenClaw (no server-side stop).
+
+G5 (docker-a2a-gateway) delivered: `goose/` sibling image (pinned 1.53.0,
+first-start provider auto-config from .env, supervisord), the `goose`
+compose profile, seed agent `a2a-goose-agent`, `tests/goose/*` scripts and
+`Makefile goose-up/goose-down/goose-test/goose-chat` targets. Found and fixed
+while testing: `silvaengine_gateway/settings.yaml` needed the GOOSE_* env
+contract (the handler also reads os.environ as a fallback for older gateway
+builds), and `a2a_utility.insert/update_a2a_task` GraphQL mutations were
+stale against the plugin schema (partitionKey argument, String/JSON types,
+missing `a2aTask` wrapper), which broke `tasks/cancel` persistence for ALL
+bridges - fixed in a2a_protocol_plugin (43e1c29, a61c8cf, 2817e89). Gateway
+image builds bust the git-module install layer via `MODULE_STAMP` (set it to
+a plugin commit and `docker compose build`) instead of `--no-cache`.
 
 Delivered in G1-G4: `handlers/goose_acp_client.py`,
 `handlers/goose_handler.py`, config wiring (`goose_*`),
