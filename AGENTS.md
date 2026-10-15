@@ -31,6 +31,7 @@ a2a_protocol_plugin/
     core_engine_handler.py, hermes_handler.py, openclaw_handler.py  Agent handlers
     goose_handler.py      Agent handler for `goose serve` (ACP over HTTP)
     goose_acp_client.py   ACP-over-HTTP transport used only by goose_handler.py
+    conversation_map.py   Per-tenant conversation key -> backend session/thread id (a2a_settings)
   models/{dynamodb,postgresql}/      Backend models (pynamodb / SQLAlchemy)
   models/repositories/{dynamodb,postgresql}/  Repo classes registered with silvaengine_daemon
   queries/, mutations/, types/       GraphQL resolvers and types, one file per entity
@@ -56,6 +57,13 @@ repo per backend, a GraphQL type, a query module and a mutation module.
    `ask_model(...)`, and emits task/status/artifact events.
 5. `DynamoDBA2ATaskStore` (works on both backends despite the name) persists tasks under the
    per-request partition from `context.state["partition_key"]`.
+
+**Conversation key.** Each turn's conversation is the caller's explicit `thread_uuid`
+(`metadata.thread_uuid` etc.), else the A2A `contextId`; the reply's `contextId` is always that
+key, so echoing it continues the conversation. Handlers receive it as `context["thread_uuid"]`
+(explicit only — a real backend thread id) and `context["context_id"]`. Backends that mint their
+own ids (goose sessions, core-engine threads) must map `context_id` to them per tenant with
+`handlers/conversation_map.py`, never send it to the backend as an id.
 
 `message/stream` and `tasks/subscribe` collect all SDK events and return them in a single POST
 response; live tokens reach clients through the gateway SSE manager (`silvaengine_daemon.sse`).

@@ -1,7 +1,7 @@
 # Goose Integration Development Plan
 
 Status: implemented and verified live against goose 1.53.0 (phases G1–G6);
-one known gap open (see [Open Items](#open-items))
+no open items
 Last updated: 2026-10-15
 Related: [A2A Protocol Plugin Development Plan](DEVELOPMENT_PLAN.md)
 
@@ -115,19 +115,21 @@ Stream chunks go to `stream_queue` as `{"name", "value", "meta"}` with names
       `-32602` active-run error: cancel and retry once);
    7. `DELETE /acp` in a `finally` block.
 3. **Conversation key → goose `sessionId`, scoped by tenant.**
-   - The handler's conversation key is `context["thread_uuid"]`, which the
-     executor takes from caller-supplied call-context state:
-     `metadata.thread_uuid` (or `metadata.contextId`, or `params.threadId`).
-     Clients send the same value on every turn.
+   - The conversation key is the caller's explicit `thread_uuid`
+     (`metadata.thread_uuid`, `metadata.contextId` or `params.threadId`),
+     else the A2A `contextId` — the client's `message.contextId`, or the id
+     the SDK generated on the first turn. The executor passes it to the
+     bridge as `context["thread_uuid"]` / `context["context_id"]`, and the
+     reply's `contextId` is always this key, so a client that simply echoes
+     `contextId` continues the conversation.
    - First turn: `session/new` (`cwd`, `mcpServers`), and the mapping is
-     stored in `a2a_settings` as `setting_id = "goose_session#{thread_uuid}"`
-     under the request's `partition_key`, through the repository layer (like
-     `DurablePushNotificationConfigStore`), so both backends work without a
-     migration. Later turns `session/load` the mapped session.
-   - The handler also returns `metadata.thread_uuid = sessionId`, but the
-     executor only adopts it when the SDK has no context id — and the SDK
-     always generates one — so the reply's `contextId` is the SDK's, not the
-     goose session id. See [Open Items](#open-items).
+     stored in `a2a_settings` as `setting_id = "goose_session#{key}"` under
+     the request's `partition_key`, through the shared
+     `handlers/conversation_map.py` helpers (repository layer, both
+     backends, no migration). Later turns `session/load` the mapped session.
+   - The same helpers map the key to engine threads in the core-engine
+     handler (`core_engine_thread#{key}`), and Hermes/OpenClaw history is
+     stored and reloaded under the key, so all bridges behave the same.
    - A client-supplied id is **never** passed to `session/load`. goose is not
      tenant-aware, so the id is resolved only through the partition-scoped
      mapping. An unknown id, or a failed `session/load`, starts a new session.
@@ -249,10 +251,16 @@ content blocks, update mapping, permission policy, session mapping),
 transport):
 
 - [x] `message/send` returns the goose reply and closes the ACP connection
-- [x] the same `metadata.thread_uuid` resumes the goose session
-- [x] the same `thread_uuid` under another tenant starts a new session
-- [x] strict `xfail` for the returned-`contextId` gap (flips to a failure once
-      fixed, so the marker gets removed)
+- [x] echoing the returned `contextId` resumes the goose session
+- [x] the same `metadata.thread_uuid` resumes the goose session, and the
+      reply's `contextId` is that `thread_uuid`
+- [x] the same `contextId` / `thread_uuid` under another tenant starts a new
+      session
+
+Also: `test_core_engine_handler.py::TestContextIdMapping` (contextId → engine
+thread, never sent to the engine as a thread id) and
+`test_phase10.py::TestConversationKey` (history and persistence keyed by
+`thread_uuid` else `contextId`).
 - `tasks/get` / `tasks/cancel` need the repository-backed task store and stay
   covered by the docker live suite.
 
@@ -299,8 +307,8 @@ variables, permission modes, and the serverless limit of `ask`.
       to end against a live `goose serve`.
 - [x] A second turn with the same `metadata.thread_uuid` resumes the same
       goose session.
-- [ ] A second turn that only echoes the returned `contextId` resumes the
-      same goose session (Open Items 1).
+- [x] A second turn that only echoes the returned `contextId` resumes the
+      same goose session (verified live against goose 1.53.0).
 - [x] Streaming emits answer tokens without duplicated or replayed text;
       reasoning is tagged and tool calls are surfaced.
 - [x] A permission request is handled per policy (`auto_allow`, `deny`,
@@ -311,20 +319,16 @@ variables, permission modes, and the serverless limit of `ask`.
 
 ## Open Items
 
-1. **Echoing the returned `contextId` does not resume the goose session.**
-   The SDK always generates a `context_id`, and `main.py` copies only
-   `params.metadata` (and `agentId` / `threadId` / `runId` keys) into the
-   call-context state — not `message.contextId`. The executor therefore passes
-   no `thread_uuid` to the handler, goose opens a new session each turn, and
-   the reply's `contextId` is the SDK's own id, not the goose session id.
-   Today clients must send the same `metadata.thread_uuid` on every turn (the
-   docker chatbot does). Fixing it means forwarding `message.contextId` as the
-   conversation key in the executor; that also changes the core-engine
-   bridge, which expects only engine-created thread ids, so it needs its own
-   change and tests. Pinned by the strict `xfail` in
-   `test_goose_executor.py`.
+None. Resolved on 2026-10-15:
 
-Resolved on 2026-10-15:
+- Echoing the returned `contextId` did not continue a conversation: the
+  A2A `contextId` never reached the bridge, so goose opened a new session
+  (and core engine a new thread, and Hermes/OpenClaw lost history) every
+  turn, and the reply's `contextId` differed between the streaming and
+  non-streaming paths. The bridge now keys every conversation by
+  `thread_uuid` else `contextId`, returns that key as the reply's
+  `contextId`, and the goose and core-engine handlers map it to their own
+  ids per tenant (`handlers/conversation_map.py`).
 
 - `deny` mapped to goose mode `auto`, where goose never asks, so tools ran.
   Now `approve` + `reject_once`, with a test for the mode sent per policy.
