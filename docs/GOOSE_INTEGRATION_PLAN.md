@@ -1,61 +1,90 @@
 # Goose Integration Development Plan
 
-Status: implemented (G1-G6 complete, 2026-10-15)
+Status: implemented and verified live against goose 1.53.0 (phases G1–G6);
+one known gap open (see [Open Items](#open-items))
 Last updated: 2026-10-15
 Related: [A2A Protocol Plugin Development Plan](DEVELOPMENT_PLAN.md)
 
 ## Goal
 
-Add a `GooseAgentHandler` bridge so A2A tasks handled by `a2a_protocol_plugin`
-can be served by a [goose](https://github.com/aaif-goose/goose) agent server, in
-the same way `HermesAgentHandler` and `OpenClawAgentHandler` front their
-backends. The target deployment is a `docker-a2a-goose-gateway` stack, modeled
-on `docker-a2a-openclaw-gateway`: SilvaEngine gateway + this plugin, plus a
-sibling goose container.
+Let A2A tasks handled by `a2a_protocol_plugin` be served by a
+[goose](https://github.com/aaif-goose/goose) agent, the same way
+`HermesAgentHandler` and `OpenClawAgentHandler` front their backends. The
+bridge is `GooseAgentHandler` (`agent_type: "goose"`). It is deployed by the
+`goose` compose profile of `docker-a2a-gateway`, which runs goose as a sibling
+container next to the SilvaEngine gateway, alongside the Hermes and OpenClaw
+profiles.
 
 ```
 A2A client ──▶ silvaengine_gateway ──▶ silvaengine_daemon ──▶ a2a_protocol_plugin
                                                                  │ GooseAgentHandler
+                                                                 │ (GooseAcpClient)
                                                                  ▼
-                                                     goose serve  (POST/GET /acp)
+                                                 goose serve  POST/GET/DELETE /acp
 ```
 
-## Target Interface: `goose serve` (ACP over HTTP)
+## Interface: `goose serve` (ACP over HTTP)
 
-- Target **`goose serve`**, which exposes goose as an Agent Client Protocol
-  (ACP) server at `/acp` over HTTP (SSE) and WebSocket. The default bind is
-  `127.0.0.1:3284`.
-- Do **not** target the legacy `goosed` REST/SSE API. Upstream issue
-  aaif-goose/goose#6642 ("goosed to ACP-over-HTTP") was closed on 2026-07-09
-  with ACP as the way forward, and its phase 4 removes `goosed`.
-- **Auth:** the server requires `GOOSE_SERVER__SECRET_KEY` unless it is started
-  with `--dangerously-unauthenticated`. Clients send the secret in the
-  `X-Secret-Key` header on every `/acp` request.
-- **Wire protocol** (ACP Streamable HTTP RFD, still a draft; see
-  agentclientprotocol PR #721):
-  - `POST /acp` `initialize` returns its result inline (200) plus an
-    `Acp-Connection-Id` header.
-  - Every later POST returns `202 Accepted` with an empty body. Results arrive
-    on SSE streams and are matched by JSON-RPC `id`.
-  - There are two `GET /acp` streams, both sent with
-    `Accept: text/event-stream`:
-    - The connection-scoped stream carries the `session/new` and
-      `session/load` results.
-    - The session-scoped stream (adds `Acp-Session-Id`) carries
-      `session/update` notifications, the `session/prompt` result, and
-      server→client requests such as `session/request_permission`.
-  - The client answers a server request by POSTing a JSON-RPC response that
-    carries both headers.
-  - `session/cancel` is a session-scoped notification.
-  - `DELETE /acp` closes the connection and its sessions.
-  - The RFD says HTTP/2 is required. Verify this against the pinned goose
-    build; if it holds, use `httpx[http2]`.
+goose is integrated through **ACP (Agent Client Protocol)**, served by
+`goose serve` at `/acp`. There is no goose-specific "gateway" API; the
+"gateway" is our SilvaEngine A2A gateway.
 
-## Fit With the Existing Handler Contract
+Why `goose serve` and not the alternatives:
 
-The handler is loaded dynamically from agent metadata (`module_name` /
-`class_name`) by `load_agent_handler()` in `a2a_ai_agent_utility.py`, which
-passes `logger=, agent_config=, setting=, context=`. It must implement:
+| Option | Decision |
+| --- | --- |
+| **`goose serve`** (ACP over HTTP + SSE) | **Used.** goose runs in its own container, any gateway process can reach it, and goose persists sessions between requests, so serverless dispatch works. |
+| `goose acp` (ACP over stdio) | Not used. It would put goose (and its tool execution) inside the gateway container and start a process per request. Same ACP methods, so a stdio transport could be added later as a second client class. |
+| `goosed` (legacy REST + SSE) | Not used. Upstream issue aaif-goose/goose#6642 (closed 2026-07-09) made ACP the way forward and schedules `goosed` for removal. |
+
+ACP over HTTP is still a draft RFD (agentclientprotocol PR #721). The behavior
+below is what goose **1.53.0** actually does, captured in
+`tests/goose_acp_transcript.json`; where it differs from the RFD, goose wins.
+
+- **Auth.** `GOOSE_SERVER__SECRET_KEY` is always required —
+  `--dangerously-unauthenticated` is not honored in 1.53.0. Clients send the
+  secret as `X-Secret-Key`; a missing or wrong key returns 401.
+- **Connection.** The client sends an `Acp-Connection-Id` (any UUID) with the
+  `initialize` POST. The server replies 200 inline and returns its own
+  canonical id in the `acp-connection-id` response header. Every later request
+  must use that id; any other id returns 404.
+- **POSTs.** Every POST after `initialize` returns `202` with an empty body.
+  Results arrive on SSE streams, matched by JSON-RPC `id`. HTTP/1.1 is enough;
+  HTTP/2 is not required.
+- **Streams.** Two `GET /acp` streams (`Accept: text/event-stream`). Each
+  message is delivered on exactly one of them:
+  - connection-scoped: the `session/new` result;
+  - session-scoped (adds `Acp-Session-Id`): `session/load` and
+    `session/set_mode` results, `session/update` notifications, the
+    `session/prompt` result, and server→client requests.
+- **Modes.** `session/set_mode` is a normal request (result `{}`) and emits a
+  `current_mode_update`. Modes: `auto`, `approve`, `smart_approve`, `chat`.
+- **Prompt result.** `stopReason` (`end_turn`, `cancelled`, `max_tokens`, …)
+  plus `usage` (input/output/total tokens).
+- **Permissions.** `session/request_permission` arrives as a server request
+  with `params.options` = `allow_always` / `allow_once` / `reject_once` /
+  `reject_always`. The client POSTs a JSON-RPC response with both headers:
+  `{"outcome": {"outcome": "selected", "optionId": "..."}}` (or
+  `{"outcome": "cancelled"}`).
+- **File system delegation.** If the client advertises `fs` capabilities,
+  goose sends `fs/read_text_file` / `fs/write_text_file` requests to the
+  client, and an unanswered request hangs the run. The client therefore
+  advertises `fs` and `terminal` as `false`, so goose uses its own tools.
+- **One run per session.** A second `session/prompt` during an active run
+  fails with JSON-RPC `-32602` ("session already has active run …; use
+  `_goose/unstable/session/steer`").
+- **History replay.** `session/load` replays the whole conversation as
+  `session/update` notifications (user, agent and thought chunks).
+- **Cancel.** `session/cancel` (a notification) resolves the pending prompt
+  in about 1.2 s mid-run. Cancelling before the run starts is a no-op, the
+  same limitation OpenClaw has.
+- **Close.** `DELETE /acp` closes the connection and its sessions.
+
+## Handler Contract
+
+`load_agent_handler()` in `a2a_ai_agent_utility.py` builds the handler from
+agent metadata (`agent_type: "goose"` → `AGENT_TYPE_MAP["goose"]`) with
+`logger=, agent_config=, setting=, context=`. It implements:
 
 ```python
 def ask_model(self, input_messages, context, stream_queue=None, stream_event=None) -> dict: ...
@@ -63,294 +92,260 @@ def cancel_run(self, run_id: str) -> bool: ...
 def resolve_approval(self, run_id: str, approved: bool, reason: str = "") -> bool: ...
 ```
 
-Streaming chunks go to `stream_queue` as `{"name", "value", "meta"}`. Names
-used today: `run_id`, `token`, `tool_call`, `tool_result`, `approval`,
-`error`.
+Stream chunks go to `stream_queue` as `{"name", "value", "meta"}` with names
+`run_id`, `token`, `tool_call`, `tool_result`, `approval`, `error`.
 
-## Design
+## Design (as built)
 
-1. **Isolate the transport.** Put the ACP-over-HTTP mechanics in
-   `handlers/goose_acp_client.py` (`GooseAcpClient`):
-   - initialize
-   - open and parse the SSE streams
-   - match responses to requests by id
-   - send JSON-RPC responses to server requests
-   - send notifications
-   - close the connection
-
-   Because the transport is a draft, header names, `Acp-Protocol-Version`,
-   SSE framing, and a later switch to WebSocket should change only this file.
-   `goose_handler.py` speaks ACP methods only. Use synchronous `httpx`, like
-   the other handlers, with an `http_transport` injection point for tests.
-2. **One ACP connection per `ask_model` call.** The handler is created for each
-   request, and gateway/Lambda processes are not sticky:
-   1. `initialize`, checking `agentCapabilities.loadSession` and
-      `promptCapabilities`.
-   2. Open the connection stream.
-   3. `session/new` or `session/load`.
-   4. Open the session stream.
-   5. `session/prompt`.
-   6. Drain updates until the prompt result arrives.
+1. **Transport isolated in `handlers/goose_acp_client.py`** (`GooseAcpClient`):
+   initialize, SSE stream readers, response routing by id, server-request
+   callbacks, notifications, close. All wire details from the section above
+   live here, so a change in the draft transport (headers,
+   `Acp-Protocol-Version`, SSE framing, WebSocket) touches only this file.
+   `goose_handler.py` works at the level of ACP methods. Synchronous `httpx`
+   with an `http_transport` injection point for tests.
+2. **One ACP connection per `ask_model` call.** The handler is created per
+   request and gateway/Lambda processes are not sticky. Sequence:
+   1. `initialize` (client capabilities: no `fs`, no `terminal`);
+   2. open the connection stream;
+   3. `session/new` or `session/load` (see 3);
+   4. open the session stream;
+   5. `session/set_mode` according to the permission policy (see 6);
+   6. `session/prompt`, draining updates until the result arrives (on a
+      `-32602` active-run error: cancel and retry once);
    7. `DELETE /acp` in a `finally` block.
-
-   goose persists sessions itself, so no process affinity is needed between
-   turns.
-3. **Map A2A `context_id` to a goose `sessionId`, scoped by tenant.**
-   - On the first turn, `session/new` (`cwd`, `mcpServers`) creates the
-     session. The handler returns `metadata.thread_uuid = sessionId`, so the
-     executor adopts it as the `context_id`. This is the same path the core
-     engine already uses (`effective_context_id` in `a2a_executor.py`).
-   - Persist the mapping in `a2a_settings` as
-     `setting_id = "goose_session#{context_id}"` under the request's
-     `partition_key`. Use the repository layer (as
-     `DurablePushNotificationConfigStore` does), so both backends work with no
-     migration.
-   - **Never pass a client-supplied id straight to `session/load`.** goose is
-     not tenant-aware, so anyone who knows a session id could load another
-     tenant's conversation. Resolve the id only through the partition-scoped
-     mapping.
-   - An unknown or missing mapping starts a new session. If `session/load`
-     fails (404), start a new session and log a warning.
-4. **Send only the new user turn.** goose keeps the conversation history, so
-   unlike Hermes and OpenClaw do not resend `input_messages` history.
-   - Convert A2A parts to ACP content blocks:
-     - text → `text`
-     - `FilePart` with bytes → `image` or `resource` (if `promptCapabilities`
-       allows it)
-     - `FilePart` with a URI → `resource_link`
-     - `DataPart` → a JSON `text` block
-   - Reject or downgrade a block type that the capabilities do not advertise.
-5. **Map ACP updates to stream chunks:**
+3. **Conversation key → goose `sessionId`, scoped by tenant.**
+   - The handler's conversation key is `context["thread_uuid"]`, which the
+     executor takes from caller-supplied call-context state:
+     `metadata.thread_uuid` (or `metadata.contextId`, or `params.threadId`).
+     Clients send the same value on every turn.
+   - First turn: `session/new` (`cwd`, `mcpServers`), and the mapping is
+     stored in `a2a_settings` as `setting_id = "goose_session#{thread_uuid}"`
+     under the request's `partition_key`, through the repository layer (like
+     `DurablePushNotificationConfigStore`), so both backends work without a
+     migration. Later turns `session/load` the mapped session.
+   - The handler also returns `metadata.thread_uuid = sessionId`, but the
+     executor only adopts it when the SDK has no context id — and the SDK
+     always generates one — so the reply's `contextId` is the SDK's, not the
+     goose session id. See [Open Items](#open-items).
+   - A client-supplied id is **never** passed to `session/load`. goose is not
+     tenant-aware, so the id is resolved only through the partition-scoped
+     mapping. An unknown id, or a failed `session/load`, starts a new session.
+4. **Only the new user turn is sent.** goose keeps the history, so unlike
+   Hermes and OpenClaw the handler does not resend `input_messages` history.
+   A2A parts become ACP content blocks: text → `text`; file bytes → `image`
+   when `promptCapabilities` allows it; file URI → `resource_link`; data →
+   JSON `text`.
+5. **ACP updates → stream chunks:**
 
    | ACP update (`session/update` → `sessionUpdate`) | Bridge chunk |
    | --- | --- |
    | `agent_message_chunk` | `token` (answer text; also collected into `content`) |
-   | `agent_thought_chunk` | `token` with `meta.data_format = "reasoning"` (kept out of the answer, as in the Hermes fix `753ce97`) |
+   | `agent_thought_chunk` | `token` with `meta.data_format = "reasoning"`, kept out of the answer (same rule as the Hermes fix `753ce97`) |
    | `tool_call` | `tool_call` (title, kind, `toolCallId`, raw input) |
    | `tool_call_update` (`completed` / `failed`) | `tool_result` (content or error) |
-   | `plan` | ignored, or a status `meta` only |
-   | `user_message_chunk` / anything replayed during `session/load` | **dropped**: history replay must never become answer tokens |
-   | `_goose/unstable/session/update` `usage_update` / `message_usage` | stored in result `metadata.usage` (for cost tracking) |
-   | `session/prompt` result `stopReason` | `end_turn` → completed; `cancelled` → canceled; `max_tokens` / `max_turn_requests` / `refusal` → partial `content` + `error` |
+   | `plan`, `current_mode_update` | ignored |
+   | anything replayed by `session/load` | **dropped** — replay must never become answer tokens |
+   | prompt result `usage` | `metadata.usage` |
+   | prompt result `stopReason` | `end_turn` → completed; `cancelled` → canceled; `max_tokens` / `max_turn_requests` / `refusal` → partial `content` + `error` |
 
-   - Only accept `session/update` notifications that arrive after the
-     `session/prompt` POST. This drops the replay from `session/load`.
-6. **Permissions** (`session/request_permission`) follow a
-   `goose_permission_mode` policy:
-   - `auto_allow`: answer with the `allow_once` option. This is the default
-     for trusted, sandboxed goose containers.
-   - `deny`: answer with `reject_once`.
-   - `ask`: emit an `approval` chunk, which makes the executor emit
-     `INPUT_REQUIRED`, then block until `resolve_approval(run_id, approved)`
-     posts the chosen `optionId` (or `{"outcome": "cancelled"}`) or
-     `goose_approval_timeout` expires (then reject).
+   Replay is filtered by **update epochs**, not timestamps: the stream reader
+   stamps each `session/update` with the epoch current when it is read,
+   `prompt()` bumps the epoch before its POST, and only updates stamped with
+   that epoch are returned. SSE delivery is FIFO, so replayed updates always
+   carry an older epoch.
+6. **Permissions** (`goose_permission_mode`):
+   - `auto_allow` (default, for sandboxed goose containers): session mode
+     `auto`; any `session/request_permission` is answered `allow_once`.
+   - `deny`: session mode `approve`, so goose asks for every tool call; each
+     request is answered `reject_once`. (Until 2026-10-15 this mapped to
+     `auto`, where goose never asks, so tools ran.)
+   - `ask`: session mode `approve`; the handler emits an `approval` chunk (the
+     executor replies `INPUT_REQUIRED`) and a worker thread waits for
+     `resolve_approval(run_id, approved)` or `goose_approval_timeout`
+     (then `reject_once`).
 
-   `ask` works only when the same process holds the session stream (daemon
-   mode). The executor's `_active_external_runs` registry is in-process, so
-   serverless deployments must use `auto_allow`/`deny`, or set goose's own
-   `GOOSE_MODE` on the server. Document this; do not silently fall back.
-7. **Cancel.** `run_id` is `"{connectionId}:{sessionId}"`, pushed to the bridge
-   as a `run_id` chunk.
-   - `cancel_run()` sends `session/cancel` on that connection and sets
-     `stream_event`.
-   - The pending prompt then resolves with `stopReason: cancelled`, and the
-     task ends `CANCELED`.
-8. **Non-streaming.** `goose serve` has no single-shot endpoint. Run the
-   streaming flow with an internal queue and return the aggregated
-   `{"content", "role", "metadata"}`.
-9. **Configuration.** Resolve each value in the order agent metadata →
-   `setting` → `Config` → default, as in Hermes:
+   `ask` only works when one process holds the session stream (daemon
+   mode): the executor's `_active_external_runs` registry is in-process.
+   Serverless deployments must use `auto_allow` or `deny`, or set goose's
+   server-side `GOOSE_MODE`.
+7. **Cancel.** `run_id = "{connectionId}:{sessionId}"`, sent as the first
+   chunk. `cancel_run()` sends `session/cancel` on the active connection (or
+   opens one if the handler has none), and rejects any pending `ask`
+   approval so the run cannot hang. The prompt then resolves with
+   `stopReason: cancelled` and the task ends `CANCELED`.
+8. **Non-streaming** uses the same flow with an internal queue and returns the
+   aggregated `{"content", "role", "metadata"}` (goose has no single-shot
+   endpoint).
+9. **Configuration.** Each value resolves in the order agent metadata →
+   `setting` → `os.environ` → `Config` → default. The `os.environ` step covers
+   gateway builds whose `settings.yaml` does not forward the `GOOSE_*` keys.
+   The secret key is the exception: setting and env win over agent metadata,
+   so tenant-writable metadata cannot override it (metadata is only a
+   fallback).
 
    | Metadata key | Setting / env | Default |
    | --- | --- | --- |
    | `goose_api_url` | `GOOSE_API_URL` | `http://localhost:3284` |
-   | `goose_secret_key` | `GOOSE_SECRET_KEY` (prefer env/setting over metadata) | — |
+   | `goose_secret_key` (fallback only) | `GOOSE_SECRET_KEY` (must equal the server's `GOOSE_SERVER__SECRET_KEY`) | — |
    | `goose_cwd` | `GOOSE_CWD` | `/workspace` |
    | `goose_mcp_servers` | `GOOSE_MCP_SERVERS` (JSON) | `[]` |
    | `goose_permission_mode` | `GOOSE_PERMISSION_MODE` | `auto_allow` |
    | `goose_timeout` | `GOOSE_STREAM_TIMEOUT` | `300` |
    | `goose_approval_timeout` | `GOOSE_APPROVAL_TIMEOUT` | `120` |
 
-   Provider and model selection stay on the goose server (`GOOSE_PROVIDER`,
-   `GOOSE_MODEL`, provider credentials, `GOOSE_DISABLE_KEYRING=1`). Never log
-   or persist the secret key.
-10. **Errors.**
-    - `401` / `403` → task FAILED with an auth message.
-    - `404` on the connection → re-initialize once.
-    - `406` / `415` → a transport bug (raise).
-    - The draft defines no SSE resume (`Last-Event-ID`), so a dropped stream
-      fails the task with whatever partial content was collected.
+   Provider and model belong to the goose server (`GOOSE_PROVIDER`,
+   `GOOSE_MODEL`, provider credentials, `GOOSE_MODE`,
+   `GOOSE_DISABLE_KEYRING=1`). The secret key is never logged or persisted.
+10. **Errors.** 401/403 → task FAILED with a message naming
+    `GOOSE_SERVER__SECRET_KEY` / `GOOSE_SECRET_KEY`; 404 on session
+    operations → new session; 406/415 → transport bug (raised). The draft has
+    no SSE resume (`Last-Event-ID`), so a dropped stream fails the task with
+    the partial content collected so far.
 
 ## Phases
 
-### Phase G1: Transport Spike
+### G1: Transport spike — done
 
-- Run a pinned `goose serve` locally and capture a real ACP exchange
-  (`initialize` → `session/new` → `session/prompt` with a tool call →
-  `session/request_permission` → `session/cancel` → `session/load` →
-  `DELETE`).
-- Confirm the details the draft leaves open:
-  - whether HTTP/2 is required
-  - SSE event framing
-  - the exact update method names
-  - the `request_permission` option ids
-  - the `session/load` replay shape
-- Save the captured transcript as a test fixture
-  (`tests/goose_acp_transcript.json`).
+Ran goose 1.53.0 and captured `initialize` → `session/new` → `set_mode` →
+`session/prompt` with a tool call → `session/request_permission` →
+`session/cancel` → `session/load` → `DELETE` into
+`tests/goose_acp_transcript.json`. Findings are folded into
+[Interface](#interface-goose-serve-acp-over-http).
 
-### Phase G2: ACP Client
+### G2: ACP client — done
 
-- Implement `handlers/goose_acp_client.py`:
-  - connection lifecycle
-  - SSE parsing
-  - routing responses by request id
-  - server-request callbacks
-  - notifications
-  - close
-- Unit-test it with `httpx.MockTransport` against the captured fixture.
+`handlers/goose_acp_client.py`, unit-tested with `httpx.MockTransport`
+scripted from the captured transcript.
 
-### Phase G3: Handler
+### G3: Handler — done
 
-- Implement `handlers/goose_handler.py`:
-  - `ask_model` (streaming and non-streaming)
-  - `cancel_run`
-  - `resolve_approval`
-  - content-block conversion
-  - mapping updates to stream chunks
-  - permission policy
-- Add `goose_*` class attributes and `_set_parameters` wiring to
-  `handlers/config.py` (mirror `hermes_*` / `openclaw_*`).
-- Add the partition-scoped `context_id` → `sessionId` mapping helpers on
-  `a2a_settings`.
+`handlers/goose_handler.py` (`ask_model`, `cancel_run`, `resolve_approval`,
+content blocks, update mapping, permission policy, session mapping),
+`goose_*` settings in `handlers/config.py`, and `AGENT_TYPE_MAP["goose"]` in
+`a2a_ai_agent_utility.py`.
 
-### Phase G4: Tests
+### G4: Tests — done
 
-- `tests/test_goose_handler.py` (mocked transport):
-  - [ ] first turn and resumed turn
-  - [ ] replay dropped on `session/load`
-  - [ ] reasoning tagging
-  - [ ] tool calls
-  - [ ] each `stopReason`
-  - [ ] cancel
-  - [ ] each permission mode
-  - [ ] the `ask` timeout
-  - [ ] a cross-tenant `context_id` that is never loaded
-  - [ ] the 401 / 404 paths
-- `tests/test_goose_live.py`, gated on `A2A_RUN_LIVE_API_TESTS=1` and
-  `GOOSE_API_URL`.
-- `tests/register_goose_agent.py`, which registers an agent with metadata
-  `module_name = "a2a_protocol_plugin.handlers.goose_handler"` and
-  `class_name = "GooseAgentHandler"`.
-- Executor-level test: `message/send` + `tasks/get` + `tasks/cancel` through
-  `A2ADaemonEngine.a2a()` with the goose handler mocked at the transport.
+`tests/test_goose_handler.py` (mocked transport):
 
-### Phase G5: Deployment (`docker-a2a-goose-gateway`, separate repo)
+- [x] first turn and resumed turn (`session/load` via the mapping)
+- [x] replay dropped on `session/load`
+- [x] reasoning tagged and kept out of the answer
+- [x] tool calls and results
+- [x] each partial `stopReason`, and `end_turn`
+- [x] cancel (prompt resolves as cancelled; bad run id)
+- [x] each permission mode, and the `ask` timeout
+- [x] the goose session mode sent for each permission policy
+- [x] a client-supplied session id is never loaded
+- [x] 401 and 404 paths; failed load falls back to a new session
+- [x] `fs`/`terminal` never advertised; only the newest user turn is sent
+- [x] env fallback; metadata cannot override the secret
+- [x] active-run `-32602` retried after cancel
 
-- A gateway image with this plugin installed, plus a `goose` service running
-  `goose serve --host 0.0.0.0 --port 3284 --with-builtin developer`.
-- A shared `GOOSE_SERVER__SECRET_KEY`, provider credentials as env vars, and
-  `GOOSE_DISABLE_KEYRING=1`.
-- A dedicated workspace volume mounted at `goose_cwd`, with no host mounts.
-- `routes.yaml`, a README, and hello/SSE/chatbot live scripts (copy the
-  OpenClaw set). Record the pinned goose version.
 
-### Phase G6: Docs
+`tests/test_goose_executor.py` (real SDK `DefaultRequestHandler` +
+`A2ADaemonExecutor` through `A2ADaemonEngine.a2a()`, goose mocked at the
+transport):
 
-- Add `goose` to the `agent_type` list in `DEVELOPMENT_PLAN.md` Phase 5 and to
-  `AGENTS.md`.
-- Document the permission modes and the serverless limitation of `ask`.
+- [x] `message/send` returns the goose reply and closes the ACP connection
+- [x] the same `metadata.thread_uuid` resumes the goose session
+- [x] the same `thread_uuid` under another tenant starts a new session
+- [x] strict `xfail` for the returned-`contextId` gap (flips to a failure once
+      fixed, so the marker gets removed)
+- `tasks/get` / `tasks/cancel` need the repository-backed task store and stay
+  covered by the docker live suite.
+
+Also delivered: `tests/test_goose_live.py` (gated on
+`A2A_RUN_LIVE_GOOSE_TESTS=1`; the resume test skips when the `a2a_setting`
+repository is unavailable, since the docker suite covers it against
+PostgreSQL) and `tests/register_goose_agent.py`.
+
+### G5: Deployment (`docker-a2a-gateway`, `goose` profile) — done
+
+- `goose/` sibling image: pinned goose 1.53.0 release binary, supervisord,
+  first-start provider config from `.env` (`GOOSE_MODEL_PROVIDER` =
+  `openai_compat` / `anthropic` / `openrouter` / `ollama` / `gemini`), and a
+  generated server secret when none is set.
+- `goose serve --host 0.0.0.0 --port 3284 --with-builtin developer`; volumes
+  for config, sessions, and a workspace mounted at `/workspace`.
+- Seed agent `a2a-goose-agent` (`agent_type: "goose"`), `tests/goose/*`
+  scripts, and `make goose-up` / `goose-down` / `goose-test` / `goose-chat`.
+- Verified live: `test_gateway_live` 10/10, `test_sse_live` 7/7, chatbot
+  streaming.
+
+Fixed while testing the deployment:
+
+- `silvaengine_gateway/settings.yaml` did not forward the `GOOSE_*` keys; the
+  handler now also reads `os.environ` (`4eb3dbd`).
+- `a2a_utility.insert_a2a_task` / `update_a2a_task` used GraphQL mutations
+  that no longer matched the plugin schema (`partitionKey` argument,
+  String/JSON types, missing `a2aTask` wrapper, nullable `$taskType`). This
+  broke `tasks/cancel` persistence for **every** bridge (`43e1c29`,
+  `a61c8cf`, `2817e89`).
+- The gateway image cached the git-installed plugin layer; builds now take a
+  `MODULE_STAMP` build arg (set it to the plugin commit) instead of needing
+  `--no-cache`.
+
+### G6: Docs — done
+
+`DEVELOPMENT_PLAN.md` Phase 5 and `AGENTS.md` list the goose handler;
+`docker-a2a-gateway` README and `.env.example` document the bridge and sibling
+variables, permission modes, and the serverless limit of `ask`.
 
 ## Acceptance Criteria
 
-- The A2A methods `message/send`, `message/stream`, `tasks/get` and
-  `tasks/cancel` work end to end against a live `goose serve`.
-- A second turn with the returned `contextId` resumes the same goose session.
-- Streaming emits answer tokens without duplicated or replayed text. Reasoning
-  is tagged and tool calls are surfaced.
-- A permission request is handled per policy. `ask` produces `INPUT_REQUIRED`
-  and resumes on approval in daemon mode.
-- One tenant can never load another tenant's goose session.
-- Unit tests run without a goose server. The live tests pass against the
-  pinned goose version recorded in the docker stack.
+- [x] `message/send`, `message/stream`, `tasks/get` and `tasks/cancel` work end
+      to end against a live `goose serve`.
+- [x] A second turn with the same `metadata.thread_uuid` resumes the same
+      goose session.
+- [ ] A second turn that only echoes the returned `contextId` resumes the
+      same goose session (Open Items 1).
+- [x] Streaming emits answer tokens without duplicated or replayed text;
+      reasoning is tagged and tool calls are surfaced.
+- [x] A permission request is handled per policy (`auto_allow`, `deny`,
+      `ask`).
+- [x] One tenant can never load another tenant's goose session.
+- [x] Unit tests run without a goose server; live tests pass against the
+      pinned goose version (1.53.0).
+
+## Open Items
+
+1. **Echoing the returned `contextId` does not resume the goose session.**
+   The SDK always generates a `context_id`, and `main.py` copies only
+   `params.metadata` (and `agentId` / `threadId` / `runId` keys) into the
+   call-context state — not `message.contextId`. The executor therefore passes
+   no `thread_uuid` to the handler, goose opens a new session each turn, and
+   the reply's `contextId` is the SDK's own id, not the goose session id.
+   Today clients must send the same `metadata.thread_uuid` on every turn (the
+   docker chatbot does). Fixing it means forwarding `message.contextId` as the
+   conversation key in the executor; that also changes the core-engine
+   bridge, which expects only engine-created thread ids, so it needs its own
+   change and tests. Pinned by the strict `xfail` in
+   `test_goose_executor.py`.
+
+Resolved on 2026-10-15:
+
+- `deny` mapped to goose mode `auto`, where goose never asks, so tools ran.
+  Now `approve` + `reject_once`, with a test for the mode sent per policy.
+- Executor-level test added (`tests/test_goose_executor.py`).
+- docker-a2a-gateway: the goose healthcheck (`goose/healthcheck.sh`) falls
+  back to the generated secret and closes its ACP connection;
+  `goose/Dockerfile` declares `ARG TARGETARCH`; `scripts/generate_env.py`
+  generates `GOOSE_SERVER__SECRET_KEY` = `GOOSE_SECRET_KEY`, offsets
+  `GOOSE_PORT`, and wires `GOOSE_MODEL_PROVIDER` / `GOOSE_MODEL` from
+  `OPENAI_COMPAT_*`.
 
 ## Risks
 
 | Risk | Mitigation |
 | --- | --- |
-| goose's ACP-over-HTTP transport is a draft RFD and may change (headers, SSE framing, HTTP/2, WebSocket). | Keep all wire details in `goose_acp_client.py`, pin the goose version in the docker stack, and run the live tests on every goose upgrade. |
-| goose sessions are not tenant-aware. | Resolve `context_id` → `sessionId` only through the partition-scoped `a2a_settings` mapping; never forward client-supplied session ids. |
-| `session/load` replays history as `session/update` events. | Drop updates that arrive before the `session/prompt` POST; add a regression test (same class of bug as the Hermes duplicate-reply fix). |
-| Interactive tool approval needs the session stream held open in one process. | Default to `auto_allow` in a sandboxed goose container; allow `ask` only in daemon mode and document it. |
-| goose runs tools (shell, file edits) with the agent's privileges. | Run goose in its own container with a scoped workspace volume, no host mounts, and network policy; the secret key is required. |
-
-## Implementation Notes (2026-10-15, goose 1.53.0)
-
-Phase G1 (transport spike) ran against a live `goose serve` 1.53.0; the
-captured exchange is stored as `tests/goose_acp_transcript.json`. Wire facts
-that differ from (or pin down) the draft RFD:
-
-- `--dangerously-unauthenticated` is NOT honored in 1.53.0; the server always
-  requires `GOOSE_SERVER__SECRET_KEY`. Clients send it as `X-Secret-Key`
-  (401 when missing/wrong).
-- The client must send an `Acp-Connection-Id` (any UUID) with the
-  `initialize` POST; the server returns its own canonical id in the
-  `acp-connection-id` response header and every later request MUST use that
-  id (a foreign id is answered with HTTP 404).
-- `initialize` returns 200 inline (application/json); every later POST
-  returns 202 with an empty body. HTTP/1.1 is sufficient (no HTTP/2 needed).
-- Routing: the connection-scoped SSE stream carries the `session/new`
-  result; the session-scoped stream (opened with `Acp-Session-Id`) carries
-  `session/load` results, `session/update` notifications, prompt results,
-  and server->client requests. Each message is delivered on exactly one
-  stream.
-- `session/set_mode` is a regular request (result `{}`) and emits a
-  `current_mode_update`; modes observed: `auto`, `approve`, `smart_approve`,
-  `chat`.
-- `session/prompt` result carries `stopReason`
-  (`end_turn`/`cancelled`/`max_tokens`/...) and `usage`
-  (input/output/total tokens).
-- `session/request_permission` arrives as a server request with
-  `params.options` = `allow_always`/`allow_once`/`reject_once`/
-  `reject_always`; the client answers by POSTing
-  `"outcome": {"outcome": "selected", "optionId": ...}` with both
-  headers (a `cancelled` outcome is also accepted).
-- If the client advertises `fs` capabilities (read/writeTextFile), goose
-  delegates file operations to the CLIENT via `fs/write_text_file` /
-  `fs/read_text_file` server requests — an unanswered request hangs the run.
-  The handler therefore advertises `fs/terminal` as `false` and lets goose's
-  own tools do the work.
-- A second `session/prompt` while a run is active fails with JSON-RPC
-  -32602 ("session already has active run ...; use
-  _goose/unstable/session/steer"). The handler cancels + retries once.
-- `session/load` replays the whole conversation as `session/update`
-  notifications (user/agent/thought chunks) — confirmed. The client uses
-  epoch-marked updates (not wall-clock) to filter replay; see
-  `GooseAcpClient.prompt`.
-- `session/cancel` (notification) resolves the pending prompt promptly
-  (~1.2 s observed mid-run). Cancelling before the run starts is a no-op,
-  the same class of edge as OpenClaw (no server-side stop).
-
-G5 (docker-a2a-gateway) delivered: `goose/` sibling image (pinned 1.53.0,
-first-start provider auto-config from .env, supervisord), the `goose`
-compose profile, seed agent `a2a-goose-agent`, `tests/goose/*` scripts and
-`Makefile goose-up/goose-down/goose-test/goose-chat` targets. Found and fixed
-while testing: `silvaengine_gateway/settings.yaml` needed the GOOSE_* env
-contract (the handler also reads os.environ as a fallback for older gateway
-builds), and `a2a_utility.insert/update_a2a_task` GraphQL mutations were
-stale against the plugin schema (partitionKey argument, String/JSON types,
-missing `a2aTask` wrapper), which broke `tasks/cancel` persistence for ALL
-bridges - fixed in a2a_protocol_plugin (43e1c29, a61c8cf, 2817e89). Gateway
-image builds bust the git-module install layer via `MODULE_STAMP` (set it to
-a plugin commit and `docker compose build`) instead of `--no-cache`.
-
-Delivered in G1-G4: `handlers/goose_acp_client.py`,
-`handlers/goose_handler.py`, config wiring (`goose_*`),
-`AGENT_TYPE_MAP["goose"]`, `tests/goose_acp_transcript.json`,
-`tests/test_goose_handler.py` (31 mocked-transport tests),
-`tests/test_goose_live.py` (gated on `A2A_RUN_LIVE_GOOSE_TESTS=1`) and
-`tests/register_goose_agent.py`.
-
-## References
+| goose's ACP-over-HTTP transport is a draft RFD and may change (headers, SSE framing, WebSocket). | All wire details live in `goose_acp_client.py`; goose is pinned (1.53.0); re-capture the transcript and re-run the live tests on every goose upgrade. |
+| goose sessions are not tenant-aware. | Resolve `thread_uuid` → `sessionId` only through the partition-scoped `a2a_settings` mapping; never forward client-supplied session ids. |
+| `session/load` replays history as `session/update` events. | Epoch-based filtering in `GooseAcpClient.prompt`, with a regression test. |
+| Interactive tool approval needs the session stream held open in one process. | Default to `auto_allow` in a sandboxed goose container; allow `ask` only in daemon mode. |
+| goose runs tools (shell, file edits) with the container's privileges. | Own container, workspace volume only, required secret key; consider a network policy for the goose service. |
+| A second prompt while a run is active is rejected by goose. | Cancel and retry once; long-term, consider `_goose/unstable/session/steer`. |
 
 ## References
 

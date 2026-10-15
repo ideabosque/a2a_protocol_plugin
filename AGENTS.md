@@ -28,8 +28,9 @@ a2a_protocol_plugin/
     a2a_pushconfig*.py    Durable push configs (stored in a2a_settings) + SSRF URL validator
     a2a_jsonrpc_bridge.py JSON-RPC dict <-> SDK protobuf request/response conversion
     a2a_core.py, a2a_utility.py, a2a_handlers.py  Persistence helpers / legacy operations
-    core_engine_handler.py, hermes_handler.py, openclaw_handler.py,
-goose_handler.py (+ goose_acp_client.py)  Agent handlers
+    core_engine_handler.py, hermes_handler.py, openclaw_handler.py  Agent handlers
+    goose_handler.py      Agent handler for `goose serve` (ACP over HTTP)
+    goose_acp_client.py   ACP-over-HTTP transport used only by goose_handler.py
   models/{dynamodb,postgresql}/      Backend models (pynamodb / SQLAlchemy)
   models/repositories/{dynamodb,postgresql}/  Repo classes registered with silvaengine_daemon
   queries/, mutations/, types/       GraphQL resolvers and types, one file per entity
@@ -113,7 +114,11 @@ PYTHONPATH="../silvaengine_daemon;." python -m pytest a2a_protocol_plugin/tests 
 - `test_postgresql_backend.py` needs a reachable PostgreSQL (`PG_*` or `DATABASE_URL`); it errors
   without one.
 - Live tests (`test_*_live.py`, `test_a2a_proxy_e2e.py`) only run with `A2A_RUN_LIVE_API_TESTS=1`
-  and real endpoints.
+  and real endpoints. Exception: `test_goose_live.py` is gated on `A2A_RUN_LIVE_GOOSE_TESTS=1`
+  (plus `GOOSE_API_URL` / `GOOSE_LIVE_KEY`).
+- `test_goose_handler.py` runs against a scripted ACP server (`httpx.MockTransport`) built from
+  `goose_acp_transcript.json`, which was captured from goose 1.53.0. Re-capture it when the pinned
+  goose version changes.
 - Filter with markers (`-m unit`, `-m a2a`, ...) — markers are declared in `tests/pytest.ini`
   and `conftest.py`; `--strict-markers` is on, so register new ones.
 - Protocol compliance: `test_a2a_protocol_compliance.py`, `a2a_tck_checker.py`,
