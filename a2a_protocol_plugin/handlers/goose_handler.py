@@ -59,6 +59,7 @@ agent metadata (env/setting take priority over metadata for it).
 
 import json
 import logging
+import os
 import threading
 from typing import Any
 
@@ -118,6 +119,7 @@ class GooseAgentHandler:
         self.goose_api_url = str(
             metadata.get("goose_api_url")
             or self.setting.get("GOOSE_API_URL")
+            or os.environ.get("GOOSE_API_URL")
             or getattr(Config, "goose_api_url", None)
             or "http://localhost:3284"
         )
@@ -125,6 +127,7 @@ class GooseAgentHandler:
         # storing the goose server secret in tenant-writable metadata).
         self.goose_secret_key = (
             self.setting.get("GOOSE_SECRET_KEY")
+            or os.environ.get("GOOSE_SECRET_KEY")
             or metadata.get("goose_secret_key")
             or getattr(Config, "goose_secret_key", None)
             or ""
@@ -132,18 +135,21 @@ class GooseAgentHandler:
         self.goose_cwd = str(
             metadata.get("goose_cwd")
             or self.setting.get("GOOSE_CWD")
+            or os.environ.get("GOOSE_CWD")
             or getattr(Config, "goose_cwd", None)
             or "/workspace"
         )
         self.goose_mcp_servers = self._parse_mcp_servers(
             metadata.get("goose_mcp_servers")
             or self.setting.get("GOOSE_MCP_SERVERS")
+            or os.environ.get("GOOSE_MCP_SERVERS")
             or getattr(Config, "goose_mcp_servers", None)
             or []
         )
         self.goose_permission_mode = (
             metadata.get("goose_permission_mode")
             or self.setting.get("GOOSE_PERMISSION_MODE")
+            or os.environ.get("GOOSE_PERMISSION_MODE")
             or getattr(Config, "goose_permission_mode", None)
             or "auto_allow"
         )
@@ -152,12 +158,14 @@ class GooseAgentHandler:
         self.timeout = float(
             metadata.get("goose_timeout")
             or self.setting.get("GOOSE_STREAM_TIMEOUT")
+            or os.environ.get("GOOSE_STREAM_TIMEOUT")
             or getattr(Config, "goose_stream_timeout", None)
             or 300.0
         )
         self.approval_timeout = float(
             metadata.get("goose_approval_timeout")
             or self.setting.get("GOOSE_APPROVAL_TIMEOUT")
+            or os.environ.get("GOOSE_APPROVAL_TIMEOUT")
             or getattr(Config, "goose_approval_timeout", None)
             or 120.0
         )

@@ -819,6 +819,27 @@ class TestErrorAndBlocks:
                      setting={**SETTING, "GOOSE_PERMISSION_MODE": "bogus"})
         assert h.goose_permission_mode == "auto_allow"
 
+    def test_env_fallback_when_setting_empty(self, logger, server):
+        """Older gateway builds have no GOOSE_* in settings.yaml; the handler
+        falls back to os.environ (metadata -> setting -> env priority)."""
+        import os as _os
+        from unittest import mock
+
+        env = {
+            "GOOSE_API_URL": "http://goose-from-env:3284",
+            "GOOSE_SECRET_KEY": "env-secret",
+            "GOOSE_CWD": "/workspace-from-env",
+            "GOOSE_PERMISSION_MODE": "deny",
+        }
+        with mock.patch.dict(_os.environ, env, clear=False):
+            # setting WITHOUT any goose keys (simulates gateway env contract gap)
+            h = _handler(logger, httpx.MockTransport(server.handler),
+                         setting={"GOOSE_API_URL": None, "GOOSE_SECRET_KEY": None})
+        assert h.goose_api_url == "http://goose-from-env:3284"
+        assert h.goose_secret_key == "env-secret"
+        assert h.goose_cwd == "/workspace-from-env"
+        assert h.goose_permission_mode == "deny"
+
     def test_metadata_cannot_override_env_secret(self, logger, server):
         h = _handler(logger, httpx.MockTransport(server.handler),
                      metadata={"goose_secret_key": "from-metadata"})
