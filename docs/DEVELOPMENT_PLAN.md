@@ -40,7 +40,7 @@ Keep in this plugin:
 | A2A gateway surface | `main.py`, `deploy()`, `dispatch_a2a`, `dispatch_agent_card`, A2A GraphQL action manifest. |
 | A2A protocol runtime | SDK server builder, JSON-RPC bridge, task store, executor, state mapping, push notification config, extended cards. |
 | A2A entities | Agent, task, message, setting GraphQL types/queries/mutations and entity repositories. |
-| A2A backend bridges | `a2a_proxy`, Hermes, Core Engine, OpenClaw, Goose (see [GOOSE_INTEGRATION_PLAN.md](GOOSE_INTEGRATION_PLAN.md)), and the common handler resolution map. |
+| A2A backend bridges | `a2a_proxy`, Hermes, Core Engine, OpenClaw, Goose (see [GOOSE_INTEGRATION_PLAN.md](GOOSE_INTEGRATION_PLAN.md)), pi (planned, see [PI_INTEGRATION_PLAN.md](PI_INTEGRATION_PLAN.md)), and the common handler resolution map. |
 | A2A tests/docs | Existing protocol compliance, bridge, live, and PostgreSQL tests adapted to the new package name. |
 
 Move to or consume from `silvaengine_daemon`:
@@ -144,6 +144,9 @@ a2a_protocol_plugin/
   [Goose Integration Development Plan](GOOSE_INTEGRATION_PLAN.md); the
   deployment is the `goose` compose profile and `tests/goose/*` scripts in
   `docker-a2a-gateway`.
+- pi is planned as the sixth bridge handler (`agent_type: "pi"`). pi has no
+  network server, so it runs behind a small Node sidecar driving
+  `pi --mode rpc`; see the [Pi Integration Development Plan](PI_INTEGRATION_PLAN.md).
 
 ## Acceptance Criteria
 
