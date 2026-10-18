@@ -868,6 +868,115 @@ class TestExecuteAiAgentStreaming:
         assert mock_a2a_core.insert_update_a2a_message.await_count == 2
 
 
+class TestCommandPermissionStreaming:
+    @pytest.mark.asyncio
+    async def test_sdk_cancel_reaches_external_runtime_after_owner_validation(self):
+        from types import SimpleNamespace
+        from a2a_protocol_plugin.handlers.a2a_server import ExternalRunRequestHandler
+        from a2a.server.request_handlers import DefaultRequestHandler
+        handler = object.__new__(ExternalRunRequestHandler)
+        handler.cancel_external_run = AsyncMock(return_value=True)
+        params = SimpleNamespace(id="original-task")
+        with patch.object(DefaultRequestHandler, "on_cancel_task", new_callable=AsyncMock, return_value="canceled-task"):
+            assert await handler.on_cancel_task(params, None) == "canceled-task"
+        handler.cancel_external_run.assert_awaited_once_with("original-task")
+
+    @pytest.mark.asyncio
+    async def test_rejected_sdk_cancel_cannot_reach_external_runtime(self):
+        from types import SimpleNamespace
+        from a2a_protocol_plugin.handlers.a2a_server import ExternalRunRequestHandler
+        from a2a.server.request_handlers import DefaultRequestHandler
+        handler = object.__new__(ExternalRunRequestHandler)
+        handler.cancel_external_run = AsyncMock()
+        with patch.object(DefaultRequestHandler, "on_cancel_task", new_callable=AsyncMock, side_effect=ValueError("owner denied")):
+            with pytest.raises(ValueError, match="owner denied"):
+                await handler.on_cancel_task(SimpleNamespace(id="other-task"), None)
+        handler.cancel_external_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_canceled_stream_remains_canceled_instead_of_reporting_completion(self, mock_a2a_core, mock_logger):
+        handler = MagicMock()
+        def ask_model(**kwargs):
+            kwargs["stream_queue"].put({"name": "token", "value": "Partial reply"})
+            kwargs["stream_event"].cancelled = True
+            kwargs["stream_event"].set()
+        handler.ask_model = ask_model
+        sdk_queue = MagicMock()
+        sdk_queue.enqueue_event = AsyncMock()
+        module = "a2a_protocol_plugin.handlers.a2a_ai_agent_utility"
+        with patch(f"{module}.Config.a2a_core", mock_a2a_core), \
+             patch(f"{module}.load_agent_handler", return_value=handler), \
+             patch(f"{module}._broadcast_to_gateway_sse", new_callable=AsyncMock) as broadcast:
+            result = await execute_ai_agent_streaming(partition_key="ep#part", agent_uuid="test-agent-001",
+                user_query="inspect", event_queue=sdk_queue, stream_timeout=5, logger=mock_logger)
+        assert result.metadata["canceled"] is True
+        assert result.content == "Request canceled."
+        assert any(call.args[1].get("state") == "canceled" for call in broadcast.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_partial_answer_followed_by_error_does_not_emit_second_sdk_message(self, mock_a2a_core, mock_logger):
+        handler = MagicMock()
+        def ask_model(**kwargs):
+            kwargs["stream_queue"].put({"name": "token", "value": "Partial reply"})
+            kwargs["stream_queue"].put({"name": "error", "value": "Command timed out"})
+            kwargs["stream_event"].set()
+        handler.ask_model = ask_model
+        sdk_queue = MagicMock()
+        sdk_queue.enqueue_event = AsyncMock()
+        module = "a2a_protocol_plugin.handlers.a2a_ai_agent_utility"
+        with patch(f"{module}.Config.a2a_core", mock_a2a_core), \
+             patch(f"{module}.load_agent_handler", return_value=handler), \
+             patch(f"{module}._broadcast_to_gateway_sse", new_callable=AsyncMock):
+            result = await execute_ai_agent_streaming(partition_key="ep#part", agent_uuid="test-agent-001",
+                user_query="inspect", event_queue=sdk_queue, stream_timeout=5, logger=mock_logger)
+        assert result.error == "Command timed out"
+        sdk_queue.enqueue_event.assert_not_awaited()  # executor emits the one error reply
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("resolved", [True, False])
+    async def test_permission_answer_targets_original_run_and_emits_one_message(self, mock_logger, resolved):
+        from types import SimpleNamespace
+        from a2a_protocol_plugin.handlers.a2a_executor import A2ADaemonExecutor
+        executor = A2ADaemonExecutor(logger=mock_logger, config=None)
+        executor._resolve_external_approval = AsyncMock(return_value=resolved)
+        context = SimpleNamespace(task_id="sdk-new-response-id", call_context=SimpleNamespace(state={
+            "approval_task_id": "original-task", "approved": True}))
+        queue = MagicMock()
+        queue.enqueue_event = AsyncMock()
+        await executor._handle_approval_response("ep#part", context, queue)
+        executor._resolve_external_approval.assert_awaited_once_with("original-task", True, "")
+        events = [call.args[0] for call in queue.enqueue_event.await_args_list]
+        assert len(events) == 1
+        assert events[0].__class__.__name__ == "Message"
+
+    @pytest.mark.asyncio
+    async def test_permission_uses_scoped_sse_not_invalid_sdk_status(self, mock_a2a_core, mock_logger):
+        handler = MagicMock()
+        def ask_model(**kwargs):
+            kwargs["stream_queue"].put({"name": "approval", "value": '{"tool_call":{"title":"sra qc-request latest"}}'})
+            kwargs["stream_queue"].put({"name": "token", "value": "qcr-fixture"})
+            kwargs["stream_event"].set()
+        handler.ask_model = ask_model
+        sdk_queue = MagicMock()
+        sdk_queue.enqueue_event = AsyncMock()
+        module = "a2a_protocol_plugin.handlers.a2a_ai_agent_utility"
+        with patch(f"{module}.Config.a2a_core", mock_a2a_core), \
+             patch(f"{module}.load_agent_handler", return_value=handler), \
+             patch(f"{module}._broadcast_to_gateway_sse", new_callable=AsyncMock) as broadcast:
+            result = await execute_ai_agent_streaming(
+                partition_key="ep#part", agent_uuid="test-agent-001", user_query="latest request",
+                event_queue=sdk_queue, task_id="task-fixture", stream_timeout=5, logger=mock_logger)
+        assert result.error is None
+        events = [call.args[0] for call in sdk_queue.enqueue_event.await_args_list]
+        assert len(events) == 1
+        assert events[0].__class__.__name__ == "Message"
+        permissions = [call for call in broadcast.await_args_list if call.args[1].get("type") == "task_permission"]
+        assert len(permissions) == 1
+        assert permissions[0].args[0] == "ep#part"
+        assert permissions[0].args[1]["task_id"] == "task-fixture"
+        assert "sra qc-request latest" in permissions[0].args[1]["details"]
+
+
 class TestParseChunk:
     def test_dict_chunk(self):
         c = _parse_chunk({"name": "token", "value": "hi"})

@@ -23,6 +23,7 @@ continue to work.
 import asyncio
 import importlib
 import inspect
+import json
 import logging
 import queue as _queue
 import threading
@@ -1011,7 +1012,20 @@ async def execute_ai_agent_streaming(
                 # human-in-the-loop) — emit INPUT_REQUIRED to A2A. The drain
                 # loop is backend-agnostic, so any handler that emits an
                 # "approval" chunk gets the same A2A interrupt (Phase 13, C7).
-                await _emit_status_to_sdk(event_queue, "INPUT_REQUIRED", _logger)
+                # Fix (2026-10-16): message/send accepts one final Message,
+                # not an unseeded SDK status event. Keep the run alive while
+                # the user answers its one-time tool permission over SSE.
+                try:
+                    permission = json.loads(parsed.value) if isinstance(parsed.value, str) else parsed.value
+                    tool_call = permission.get("tool_call", {}) if isinstance(permission, dict) else {}
+                except (TypeError, ValueError):
+                    tool_call = {}
+                await _broadcast_to_gateway_sse(
+                    partition_key,
+                    {"type": "task_permission", "task_id": sse_task_id,
+                     "details": json.dumps(tool_call, default=str)},
+                    _logger,
+                )
                 await _emit_status_to_sse(
                     streaming_manager, sse_task_id, "INPUT_REQUIRED", _logger,
                     partition_key=partition_key,
@@ -1068,8 +1082,12 @@ async def execute_ai_agent_streaming(
             handler_metadata = {}
 
         # Final state
-        final_content = "".join(state.chunks)
-        if state.error:
+        canceled = bool(getattr(stream_event, "cancelled", False))
+        final_content = "Request canceled." if canceled else "".join(state.chunks)
+        if canceled:
+            state.error = None
+            result = BridgeResult(content=final_content, role="agent", metadata={"canceled": True})
+        elif state.error:
             result = BridgeResult(error=state.error)
         else:
             # Drained-stream state wins over the handler's closing metadata.
@@ -1104,14 +1122,14 @@ async def execute_ai_agent_streaming(
         # EventQueue because on_message_send rejects TaskStatusUpdateEvent.
         # Stamp the reply with the conversation key so the client learns the
         # contextId to echo back on the next turn.
-        if final_content:
+        if final_content and not state.error:
             await _emit_to_sdk(
                 event_queue, final_content, _logger, context_id=effective_thread_uuid
             )
 
         # Emit final status to SSE only (not SDK EventQueue)
         await _emit_status_to_sse(
-            streaming_manager, sse_task_id, "COMPLETED" if not state.error else "FAILED", _logger,
+            streaming_manager, sse_task_id, "CANCELED" if canceled else "COMPLETED" if not state.error else "FAILED", _logger,
             partition_key=partition_key,
         )
 

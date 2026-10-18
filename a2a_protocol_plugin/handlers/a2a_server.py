@@ -226,6 +226,21 @@ class A2AJsonRpcCompatibilityEndpoint:
             )
 
 
+class ExternalRunRequestHandler(DefaultRequestHandler):
+    """Stop the external runtime after the SDK's owner-scoped cancel succeeds."""
+
+    def __init__(self, *, cancel_external_run, **kwargs):
+        self.cancel_external_run = cancel_external_run
+        super().__init__(**kwargs)
+
+    async def on_cancel_task(self, params, context):
+        # Fix (2026-10-16): SDK remote cancellation changes stored state but
+        # cannot interrupt a separately managed Goose/Hermes process.
+        task = await super().on_cancel_task(params, context)
+        await self.cancel_external_run(params.id)
+        return task
+
+
 class A2AProtocolServer:
     """
     A2A Protocol Server
@@ -398,7 +413,8 @@ class A2AProtocolServer:
         self.extended_agent_card = self._build_extended_agent_card()
 
         # Create request handler - routes A2A RPC calls to executor.
-        self.request_handler = DefaultRequestHandler(
+        self.request_handler = ExternalRunRequestHandler(
+            cancel_external_run=self.agent_executor._cancel_external_run,
             agent_executor=self.agent_executor,
             task_store=self.task_store,
             agent_card=self.agent_card,

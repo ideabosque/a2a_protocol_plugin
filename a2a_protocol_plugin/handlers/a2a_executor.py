@@ -984,7 +984,7 @@ class A2ADaemonExecutor(AgentExecutor):
                                 task_id=task_id,
                                 task_type=task_type,
                                 assigned_agent_id=agent_uuid or "",
-                                status="failed" if result.error else "completed",
+                                status="canceled" if (result.metadata or {}).get("canceled") else "failed" if result.error else "completed",
                                 output_data={"content": result.content[:500]} if result.content else None,
                                 context_id=effective_context_id,
                                 updated_by="a2a_daemon",
@@ -1173,7 +1173,9 @@ class A2ADaemonExecutor(AgentExecutor):
         event_queue: EventQueue,
     ) -> None:
         """Resolve a pending human approval for an external (Hermes) run."""
-        task_id = _context_get_any(
+        # Fix (2026-10-16): the SDK assigns this response its own task id.
+        # Permission must target the original run, supplied separately.
+        task_id = _context_state_get_any(request_context, "approval_task_id") or _context_get_any(
             request_context,
             "task_id",
             "taskId",
@@ -1198,9 +1200,6 @@ class A2ADaemonExecutor(AgentExecutor):
             await _emit_event(
                 event_queue,
                 _agent_text_message("Approval response missing task_id"),
-            )
-            await _emit_event(
-                event_queue, _status_update_event(_task_state("FAILED"))
             )
             return
 
@@ -1227,14 +1226,7 @@ class A2ADaemonExecutor(AgentExecutor):
                     f"No pending approval found for task {task_id}"
                 ),
             )
-            await _emit_event(
-                event_queue, _status_update_event(_task_state("FAILED"))
-            )
             return
-
-        await _emit_event(
-            event_queue, _status_update_event(_task_state("COMPLETED"))
-        )
 
     # ------------------------------------------------------------------
     # Per-task external-run registry (Phase 4: Hermes cancel/approval)
@@ -1273,6 +1265,9 @@ class A2ADaemonExecutor(AgentExecutor):
         if not run or not hasattr(run.handler, "cancel_run"):
             return False
 
+        if run.stream_event:
+            run.stream_event.cancelled = True
+
         import asyncio
 
         await asyncio.get_running_loop().run_in_executor(
@@ -1297,10 +1292,10 @@ class A2ADaemonExecutor(AgentExecutor):
 
         import asyncio
 
-        await asyncio.get_running_loop().run_in_executor(
+        resolved = await asyncio.get_running_loop().run_in_executor(
             None, run.handler.resolve_approval, run.run_id, approved, reason
         )
-        return True
+        return bool(resolved)
 
     async def cancel(self, task_id: str) -> None:
         """
