@@ -109,9 +109,10 @@ def _settled(aborted: bool = False) -> dict:
 
 
 def _dialog(method: str, dialog_id: str, **extra) -> dict:
+    # Real pi wire shape (P1 spike): NO sessionId — the handler maps the
+    # dialog to its current session itself.
     event = {
         "type": "extension_ui_request", "id": dialog_id, "method": method,
-        "sessionId": "PI-SESSION-PLACEHOLDER",  # rewritten by the mock per prompt
         "title": f"{method} dialog",
     }
     event.update(extra)
@@ -866,7 +867,9 @@ class TestPermissionModes:
         sid = server.new_session_id()
         server.sessions[sid] = {"sessionFile": "/x.jsonl", "state": {}}
         server.script_run(sid, [
-            {"event": _dialog("confirm", "d1"), "wait_ui": 8.0},
+            {"event": _dialog("confirm", "d1",
+                              message="rm -rf /tmp/spike-tmp"),
+             "wait_ui": 8.0},
             {"event": _text_delta("resumed after approval")},
         ])
         h = _handler(logger, transport,
@@ -899,6 +902,10 @@ class TestPermissionModes:
         approval = json.loads(approvals[0]["value"])
         assert approval["session_id"] == sid
         assert approval["method"] == "confirm"
+        # the dialog message (what is being approved) rides the chunk, both
+        # flat and inside the bridge's `tool_call` details blob
+        assert approval["message"] == "rm -rf /tmp/spike-tmp"
+        assert approval["tool_call"]["input"] == "rm -rf /tmp/spike-tmp"
 
         run_id = next(c["value"] for c in chunks if c["name"] == "run_id")
         assert h.resolve_approval(run_id, True) is True

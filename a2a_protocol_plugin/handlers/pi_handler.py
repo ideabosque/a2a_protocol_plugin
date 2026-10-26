@@ -199,6 +199,9 @@ class PiAgentHandler:
         self._run_error: str | None = None
         # One-up run counter per handler run (run_id = "sessionId:N").
         self._run_seq = 0
+        # The live run's pi session id (dialogs carry no sessionId in pi's
+        # RPC wire format — the handler knows the current session).
+        self._current_session_id: str | None = None
         # Set when the run window's finally ran (possibly deferring the turn
         # close because an ask-mode approval was still pending).
         self._run_done = threading.Event()
@@ -234,6 +237,7 @@ class PiAgentHandler:
         try:
             client, session_id = self._open_session(context)
             session_id_holder.append(session_id)
+            self._current_session_id = session_id
             run_end, events = self._prompt_with_busy_policy(
                 client, session_id, message, images,
                 on_event=lambda ev: self._process_event(ev, chunks, None),
@@ -272,6 +276,7 @@ class PiAgentHandler:
         try:
             client, session_id = self._open_session(context)
             session_id_holder.append(session_id)
+            self._current_session_id = session_id
             # Publish the run id BEFORE any event chunk so the executor can
             # register cancel/approval routing for the in-flight run.
             run_id = self._next_run_id(session_id)
@@ -552,12 +557,14 @@ class PiAgentHandler:
         if method not in _DIALOG_METHODS or not request_id:
             return  # fire-and-forget UI (notify/setStatus/...): ignore
 
-        session_id = self._session_id_from_event(event)
+        session_id = self._session_id_from_event(event) or self._current_session_id
         mode = self.pi_permission_mode
         if mode == "ask":
-            # Pending approvals are keyed by SESSION id (like goose): one run
-            # per session, dialogs are sequential during that run.
-            approval_key = session_id or request_id
+            # Pending approvals are keyed by SESSION id (like goose) when the
+            # run's session is known, AND by the dialog request id — pi does
+            # not stamp UI records with a session id (P1 spike), so the
+            # run_id-keyed lookup needs the current session; the dialog-id
+            # key covers sessions-less late answers.
             with self._lock:
                 pending: dict[str, Any] = {
                     "event_obj": event,
@@ -566,7 +573,9 @@ class PiAgentHandler:
                     "event": threading.Event(),
                     "client": self._client,
                 }
-                self._pending_approvals[approval_key] = pending
+                if session_id:
+                    self._pending_approvals[session_id] = pending
+                self._pending_approvals[request_id] = pending
             # Surface the pending dialog to the bridge (executor replies
             # INPUT_REQUIRED; resolve_approval(run_id, approved) resumes pi).
             if self._stream_queue is not None:
@@ -578,7 +587,20 @@ class PiAgentHandler:
                         "session_id": session_id,
                         "method": method,
                         "title": event.get("title"),
+                        # The dialog message carries WHAT is being approved
+                        # (the tool-approval extension summarizes the tool
+                        # input, e.g. the exact bash command).
+                        "message": event.get("message"),
                         "options": event.get("options"),
+                        # The gateway bridge renders this key as the SSE
+                        # task_permission `details` (shared with the Hermes/
+                        # goose shapes) — shows the operator the tool call.
+                        "tool_call": {
+                            "method": method,
+                            "title": event.get("title") or method,
+                            "input": event.get("message"),
+                            "dialog_id": request_id,
+                        },
                         "dialog_id": request_id,
                     }),
                 })
@@ -660,10 +682,12 @@ class PiAgentHandler:
             self.logger.warning("pi approval answer failed: %s", e)
         finally:
             with self._lock:
-                approval_key = session_id or request_id
-                current = self._pending_approvals.get(approval_key)
-                if current is pending:
-                    self._pending_approvals.pop(approval_key, None)
+                for key in {session_id or "", request_id}:
+                    if not key:
+                        continue
+                    current = self._pending_approvals.get(key)
+                    if current is pending:
+                        self._pending_approvals.pop(key, None)
                 no_more_pending = not self._pending_approvals
             # Deferred turn close: the run window could not close (approval
             # pending). When this worker was the last pending one and the
