@@ -4,11 +4,12 @@ pi Agent Handler — Unit Test Suite
 
 Tests for PiAgentHandler + PiSidecarClient using httpx.MockTransport
 (no real HTTP calls and no pi installation). Event frames follow the pi RPC
-event stream documented in pi v1.4.0 (docs/json.md, docs/rpc-commands.md,
-docs/rpc-extension-ui.md) as forwarded by the docker-a2a-gateway
-``pi/`` sidecar's HTTP+SSE surface (docs/PI_INTEGRATION_PLAN.md §1).
-Re-capture the scripted runs against a live sidecar in the P4 spike when
-the pinned pi version changes.
+event stream as captured from a REAL pi sidecar run —
+tests/pi_rpc_transcript.json (captured 2026-10-25 with the
+docker-a2a-gateway tests/pi/test_spike_protocol.py P1 spike against pi
+v1.4.0 / compat/glm-5.2: text/thinking deltas, bash tool call, 409 +
+followUp ack, abort, index-based session resume). Re-run the spike when the
+pinned pi version changes (docker-a2a-gateway `pi/` sibling).
 
 Covers: transport (health / auth / session lifecycle), streaming mapping
 (``run_id`` first, ``text_delta`` → token, ``thinking_delta`` → tagged
@@ -162,6 +163,9 @@ class MockPiSidecar:
         self.deletes: list[str] = []
         self.gets: list[str] = []
         self.sessions: dict[str, dict] = {}
+        # Real sidecar contract: DELETE stops the process; GET transparently
+        # re-opens the session from the persisted index (spike §08).
+        self.resume_index: dict[str, dict] = {}
         self._seq = 0
 
     # ------------------------------------------------------------------
@@ -246,12 +250,20 @@ class MockPiSidecar:
 
         if method == "GET" and len(parts) == 1:
             self.gets.append(sid)
-            if self.not_found or sid not in self.sessions:
+            if self.not_found:
+                return httpx.Response(404, json={"error": f"unknown session {sid}"})
+            if sid not in self.sessions and sid in self.resume_index:
+                # getOrResume: spawn + switch_session — the mock re-opens the
+                # same state (proves the map survived the close).
+                self.sessions[sid] = dict(self.resume_index[sid])
+            if sid not in self.sessions:
                 return httpx.Response(404, json={"error": f"unknown session {sid}"})
             return httpx.Response(200, json=self.sessions[sid])
 
         if method == "DELETE" and len(parts) == 1:
             self.deletes.append(sid)
+            if sid in self.sessions:
+                self.resume_index[sid] = dict(self.sessions[sid])
             self.sessions.pop(sid, None)
             return httpx.Response(204)
 
@@ -498,6 +510,36 @@ class TestNonStreaming:
         # The sidecar prompt payload carries ONLY the newest user text.
         assert server.prompts[0][1]["message"] == "newest question"
 
+    def test_provider_error_message_end_is_surfaced(self, logger, server,
+                                                    transport):
+        """P1 spike: a provider failure (wrong API key) rides message_end with
+        stopReason=error + errorMessage (no error event); the turn ends FAILED
+        with the cause, not an empty success."""
+        sid = server.new_session_id()
+        server.sessions[sid] = {"sessionFile": "/data/sessions/x.jsonl",
+                                "state": {}}
+        server.script_run(sid, [
+            {"event": {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant", "content": [],
+                    "stopReason": "error",
+                    "errorMessage": "OpenAI API error (401): Incorrect API key",
+                },
+            }},
+        ])
+        h = _handler(logger, transport, server=server)
+        ctx = _mapped(h, sid)
+        q = _queue.Queue()
+        result = h.ask_model([{"role": "user", "content": "go"}], ctx,
+                             stream_queue=q, stream_event=threading.Event())
+        chunks = _drain(q)
+        errors = [c for c in chunks if c["name"] == "error"]
+        assert len(errors) == 1
+        assert "Incorrect API key" in errors[0]["value"]
+        assert result["error"] == "OpenAI API error (401): Incorrect API key"
+        assert result["content"] == ""
+
     def test_error_run_end_is_surfaced(self, logger, server, transport):
         sid = server.new_session_id()
         server.sessions[sid] = {"sessionFile": "/data/sessions/x.jsonl",
@@ -584,7 +626,10 @@ class TestContextMapping:
         h.ask_model([{"role": "user", "content": "hi"}],
                     {"partition_key": "ep#x", "context_id": "ctx-lost"})
         sid = h._rows[("ep#x", h._setting_id("ctx-lost"))]["setting"]["session_id"]
-        server.sessions.pop(sid)  # sidecar forgot the session
+        # The per-turn close moved it to the resume index; the sidecar
+        # "forgets" the session entirely (e.g. operator wiped the volume).
+        server.sessions.pop(sid, None)
+        server.resume_index.pop(sid, None)
         second = h.ask_model([{"role": "user", "content": "back"}],
                              {"partition_key": "ep#x", "context_id": "ctx-lost"})
         assert len(server.creates) == 2  # a fresh session replaced the lost one
@@ -943,6 +988,76 @@ class TestCancel:
         assert server.aborts == [sid]
         ev.set()
         worker.join(timeout=8)
+
+    def test_turn_closes_the_process(self, logger, server, transport):
+        """Goose parity: the turn deletes the sidecar session (frees the pi
+        process); the session FILE + mapping survive for the next turn."""
+        sid = server.new_session_id()
+        server.sessions[sid] = {"sessionFile": "/x.jsonl", "state": {}}
+        server.script_run(sid, [{"event": _text_delta("hi")}])
+        h = _handler(logger, transport, server=server)
+        ctx = _mapped(h, sid)
+        h.ask_model([{"role": "user", "content": "go"}], ctx)
+        assert server.deletes == [sid]
+        assert h._client is None
+        # Second turn re-opens the SAME mapped session (probe + prompt; the
+        # real sidecar resumes from its persisted index — modeled by the mock).
+        server.script_run(sid, [{"event": _text_delta("again")}])
+        second = h.ask_model([{"role": "user", "content": "go 2"}], ctx)
+        assert second["content"] == "again"
+        # mapping unchanged; no session was ever (re)created
+        stored = h._rows[("ep#x", h._setting_id("ctx-fixed"))]["setting"]["session_id"]
+        assert stored == sid
+        assert server.creates == []
+        assert server.aborts == []  # DELETE, not abort: process close each turn
+
+    def test_turn_close_skipped_while_approval_pending(self, logger, server,
+                                                       transport):
+        sid = server.new_session_id()
+        server.sessions[sid] = {"sessionFile": "/x.jsonl", "state": {}}
+        server.script_run(sid, [
+            {"event": _dialog("confirm", "d1"), "wait_ui": 6.0},
+            {"event": _text_delta("late")},
+        ])
+        h = _handler(logger, transport,
+                     metadata={"pi_permission_mode": "ask",
+                               "pi_approval_timeout": "8"},
+                     server=server)
+        ctx = _mapped(h, sid)
+        q = _queue.Queue()
+        ev = threading.Event()
+
+        def _run():
+            return h.ask_model([{"role": "user", "content": "go"}], ctx,
+                               stream_queue=q, stream_event=ev)
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        run_id = None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                c = q.get(timeout=0.3)
+                if c["name"] == "run_id":
+                    run_id = c["value"]
+                    break
+            except _queue.Empty:
+                pass
+        assert run_id
+        h.resolve_approval(run_id, True)
+        worker.join(timeout=15)
+        # The dialog was answered via the still-open run connection; once the
+        # pending state clears, the turn close deletes the session process.
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline and h._pending_approvals:
+            time.sleep(0.05)
+        assert not h._pending_approvals
+        assert server.deletes == [sid]
+
+    def test_cancel_unknown_session_is_done(self, logger, server, transport):
+        h = _handler(logger, transport, server=server)
+        # unknown session (sidecar restart / reaped): abort → 404 → True
+        assert h.cancel_run("pi-sid-gone:1") is True
 
     def test_cancel_unparseable_run_id_is_noop(self, logger, server, transport):
         h = _handler(logger, transport, server=server)

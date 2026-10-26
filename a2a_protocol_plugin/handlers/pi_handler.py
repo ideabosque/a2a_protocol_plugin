@@ -194,8 +194,14 @@ class PiAgentHandler:
         self._pending_approvals: dict[str, dict[str, Any]] = {}
         # The active ask_model run's stream queue (approval chunk target).
         self._stream_queue: Any = None
+        # Provider-level failure of the current run (message_end errorMessage
+        # — pi reports these without a dedicated error event, P1 spike).
+        self._run_error: str | None = None
         # One-up run counter per handler run (run_id = "sessionId:N").
         self._run_seq = 0
+        # Set when the run window's finally ran (possibly deferring the turn
+        # close because an ask-mode approval was still pending).
+        self._run_done = threading.Event()
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
@@ -223,8 +229,11 @@ class PiAgentHandler:
         message, images = self._to_prompt(input_messages)
         chunks: list[str] = []
         client: PiSidecarClient | None = None
+        session_id_holder: list[str] = []
+        self._run_error = None
         try:
             client, session_id = self._open_session(context)
+            session_id_holder.append(session_id)
             run_end, events = self._prompt_with_busy_policy(
                 client, session_id, message, images,
                 on_event=lambda ev: self._process_event(ev, chunks, None),
@@ -236,9 +245,10 @@ class PiAgentHandler:
             self.logger.warning(f"PiAgentHandler non-streaming error: {e}")
             return {"content": "", "role": "agent", "error": str(e)}
         finally:
-            if client is not None:
-                client.close()
-            self._clear_client(client)
+            self._close_session_run(
+                client, context,
+                session_id=session_id_holder[0] if session_id_holder else None,
+            )
 
     def _ask_streaming(
         self,
@@ -250,7 +260,9 @@ class PiAgentHandler:
         message, images = self._to_prompt(input_messages)
         chunks: list[str] = []
         client: PiSidecarClient | None = None
+        session_id_holder: list[str] = []
         self._stream_queue = stream_queue
+        self._run_error = None
 
         def _on_event(event: dict[str, Any]) -> None:
             if stream_event.is_set():
@@ -259,6 +271,7 @@ class PiAgentHandler:
 
         try:
             client, session_id = self._open_session(context)
+            session_id_holder.append(session_id)
             # Publish the run id BEFORE any event chunk so the executor can
             # register cancel/approval routing for the in-flight run.
             run_id = self._next_run_id(session_id)
@@ -277,7 +290,10 @@ class PiAgentHandler:
             return {"content": "".join(chunks), "role": "agent", "error": str(e)}
         finally:
             stream_event.set()
-            self._clear_client(client)
+            self._close_session_run(
+                client, context,
+                session_id=session_id_holder[0] if session_id_holder else None,
+            )
             self._stream_queue = None
 
     # ------------------------------------------------------------------
@@ -340,6 +356,52 @@ class PiAgentHandler:
         if client is not None and self._client is client:
             self._client = None
 
+    def _close_session_run(
+        self,
+        client: PiSidecarClient | None,
+        context: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """Close the turn: DELETE /sessions/{id} (frees the pi process) + drop
+        the HTTP client — goose-parity bookkeeping.
+
+        The session FILE survives the process (the sidecar re-opens it via the
+        resume index), so multi-turn conversations keep working; a per-turn
+        process keeps the one-process-per-session pool effectively flat
+        (docked E2E: sessions pile up to the PI_MAX_PROCESSES cap otherwise).
+        Kept open only while an ask-mode approval is pending — the pending
+        approval worker posts the deferred close once it resolves (the
+        ``_run_done`` signal tells it this run window is settled).
+        """
+        self._run_done.set()
+        if client is None:
+            return
+        try:
+            with self._lock:
+                approval_pending = any(
+                    pending.get("client") is client
+                    for pending in self._pending_approvals.values()
+                )
+            if approval_pending:
+                self.logger.info(
+                    "pi process kept open: ask-mode approval pending"
+                )
+                return
+            if session_id:
+                try:
+                    client.close_session(session_id)
+                except Exception as e:  # best effort; the reaper covers rest
+                    self.logger.warning(
+                        "pi close_session(%s) failed: %s", session_id, e
+                    )
+        finally:
+            client.close()
+            if self._client is client:
+                self._client = None
+            # The run window ran its bookkeeping; only an ask-mode approval
+            # worker may still hold the deferred close.
+            self._run_done.set()
+
     # ------------------------------------------------------------------
     # Result assembly
     # ------------------------------------------------------------------
@@ -370,12 +432,12 @@ class PiAgentHandler:
             "role": "agent",
             "metadata": metadata,
         }
-        error_text = run_end.get("error")
+        error_text = run_end.get("error") or self._run_error
         if aborted:
             output["error"] = "Run aborted"
         elif isinstance(error_text, str) and error_text:
             # Provider-level failure after the prompt was accepted (pi reports
-            # these through the event stream / run_end, not the HTTP status).
+            # these through the message stream / run_end, not the HTTP status).
             output["error"] = error_text
         return output
 
@@ -425,6 +487,18 @@ class PiAgentHandler:
             if client is None:
                 client = self._new_client()
             client.abort(session_id)
+        except PiSidecarError as e:
+            if e.is_not_found():
+                # Unknown session: nothing is running — the cancel is done.
+                self.logger.info(
+                    "pi session %s no longer exists; cancel complete",
+                    session_id,
+                )
+            else:
+                self.logger.warning(
+                    f"Failed to abort pi session {session_id}: {e}"
+                )
+                return False
         except Exception as e:
             self.logger.warning(
                 f"Failed to abort pi session {session_id}: {e}"
@@ -590,6 +664,22 @@ class PiAgentHandler:
                 current = self._pending_approvals.get(approval_key)
                 if current is pending:
                     self._pending_approvals.pop(approval_key, None)
+                no_more_pending = not self._pending_approvals
+            # Deferred turn close: the run window could not close (approval
+            # pending). When this worker was the last pending one and the
+            # run's finally already ran, finish the bookkeeping here.
+            if (
+                no_more_pending
+                and self._run_done.is_set()
+                and client is not None
+            ):
+                try:
+                    client.close_session(session_id or "")
+                except Exception as e:
+                    self.logger.debug("deferred pi close_session failed: %s", e)
+                client.close()
+                if self._client is client:
+                    self._client = None
 
     # ------------------------------------------------------------------
     # context key -> sessionId mapping (partition-scoped a2a_settings)
@@ -735,6 +825,22 @@ class PiAgentHandler:
                     })
             # text_end / thinking_end / toolcall_* / done / start: authoritative
             # full-block copies — never re-emitted (no duplicated answer).
+            return
+
+        if etype == "message_end":
+            # P1 spike finding: a provider failure (e.g. wrong API key) arrives
+            # as a message_end with stopReason="error" + errorMessage and
+            # NO error event; pi then settles normally. Surface it so the
+            # turn ends FAILED with the cause instead of an empty success.
+            message = event.get("message") or {}
+            error_message = (
+                message.get("errorMessage")
+                if isinstance(message, dict) else None
+            )
+            if isinstance(error_message, str) and error_message:
+                if stream_queue is not None:
+                    stream_queue.put({"name": "error", "value": error_message})
+                self._run_error = error_message
             return
 
         if etype == "tool_execution_start":

@@ -1,0 +1,190 @@
+{
+  "captured": "docker-a2a-gateway tests/pi/test_spike_protocol.py against the bundled pi sidecar (pi 1.4.0, compat/glm-5.2 via models.json OPENAI_COMPAT_* endpoint)",
+  "note": "Sanitized protocol transcript: session ids + event shapes + model text. Re-capture with tests/pi/test_spike_protocol.py when the pinned pi version changes. test_pi_handler.py scripts its MockPiSidecar from these shapes.",
+  "results": {
+    "passed": 14,
+    "total": 14
+  },
+  "sections": {
+    "01_health": {
+      "status": 200,
+      "body": {
+        "status": "ok",
+        "pi": "1.4.0",
+        "sessions": {
+          "active": 0
+        }
+      }
+    },
+    "02_create": {
+      "status": 200,
+      "body": {
+        "sessionId": "01a175d5-a013-754e-a802-be3037c78863",
+        "sessionFile": "/data/sessions/2026-10-26T01-31-36-851Z_01a175d5-a013-754e-a802-be3037c78863.jsonl",
+        "resumed": false
+      }
+    },
+    "02_get_session": {
+      "get_status": 200,
+      "state_sessionFile": "/data/sessions/2026-10-26T01-31-36-851Z_01a175d5-a013-754e-a802-be3037c78863.jsonl",
+      "state_model": "glm-5.2",
+      "state_streaming": false
+    },
+    "03_plain": {
+      "status": 200,
+      "content_type": "text/event-stream",
+      "closed_with_run_end": true,
+      "text": "PI-SPIKE-874A",
+      "summary": {
+        "counts": {
+          "session": 1,
+          "agent_start": 1,
+          "turn_start": 1,
+          "message_start": 3,
+          "message_end": 3,
+          "message_update": 10,
+          "turn_end": 1,
+          "agent_end": 1,
+          "agent_settled": 1,
+          "run_end": 1
+        },
+        "assistant_message_events": {
+          "text_start": 1,
+          "text_delta": 8,
+          "text_end": 1
+        }
+      },
+      "run_end": {
+        "type": "run_end",
+        "sessionId": "01a175d5-a013-754e-a802-be3037c78863",
+        "sessionFile": "/data/sessions/2026-10-26T01-31-36-851Z_01a175d5-a013-754e-a802-be3037c78863.jsonl",
+        "aborted": false,
+        "stopReason": "end_turn",
+        "usage": {
+          "input": 5,
+          "output": 10,
+          "cacheRead": 1389,
+          "cacheWrite": 0,
+          "reasoning": 0,
+          "totalTokens": 1404,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        }
+      }
+    },
+    "04_thinking": {
+      "summary": {
+        "counts": {
+          "session": 1,
+          "agent_start": 1,
+          "turn_start": 1,
+          "message_start": 2,
+          "message_end": 2,
+          "message_update": 81,
+          "turn_end": 1,
+          "agent_end": 1,
+          "agent_settled": 1,
+          "run_end": 1
+        },
+        "assistant_message_events": {
+          "thinking_start": 1,
+          "thinking_delta": 32,
+          "text_start": 1,
+          "text_delta": 45,
+          "thinking_end": 1,
+          "text_end": 1
+        }
+      },
+      "run_end": {
+        "type": "run_end",
+        "sessionId": "01a175d5-a013-754e-a802-be3037c78863",
+        "sessionFile": "/data/sessions/2026-10-26T01-31-36-851Z_01a175d5-a013-754e-a802-be3037c78863.jsonl",
+        "aborted": false,
+        "stopReason": "end_turn",
+        "usage": {
+          "input": 29,
+          "output": 110,
+          "cacheRead": 1393,
+          "cacheWrite": 0,
+          "reasoning": 0,
+          "totalTokens": 1532,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        }
+      }
+    },
+    "05_tool": {
+      "summary": {
+        "counts": {
+          "session": 1,
+          "agent_start": 1,
+          "turn_start": 2,
+          "message_start": 4,
+          "message_end": 4,
+          "message_update": 20,
+          "tool_execution_start": 1,
+          "tool_execution_update": 2,
+          "tool_execution_end": 1,
+          "turn_end": 2,
+          "agent_end": 1,
+          "agent_settled": 1,
+          "run_end": 1
+        },
+        "assistant_message_events": {
+          "toolcall_start": 1,
+          "toolcall_delta": 1,
+          "toolcall_end": 1,
+          "text_start": 1,
+          "text_delta": 15,
+          "text_end": 1
+        }
+      },
+      "tool_execution_start_shape": {
+        "type": "tool_execution_start",
+        "toolCallId": "call_xhbqw3he",
+        "toolName": "bash",
+        "args": {
+          "command": "echo spike-4e5e02"
+        }
+      },
+      "tool_execution_end_shape": {
+        "toolCallId": "call_xhbqw3he",
+        "toolName": "bash",
+        "isError": false,
+        "durationMs": 7
+      }
+    },
+    "06_busy": {
+      "no_behavior_status": 409,
+      "no_behavior_body": {
+        "error": "session 01a175d5-a013-754e-a802-be3037c78863 is already streaming; send streamingBehavior \"steer\" or \"followUp\""
+      },
+      "followup_status": 200,
+      "followup_body": {
+        "disposition": "followUp"
+      }
+    },
+    "07_abort": {
+      "abort": "aborted:true observed"
+    },
+    "08_resume": {
+      "delete_status": 200,
+      "probe_status_after_close": 200,
+      "sessionFile": "/data/sessions/2026-10-26T01-31-36-851Z_01a175d5-a013-754e-a802-be3037c78863.jsonl",
+      "resume_text": "PI-SPIKE-874A",
+      "final_state": {
+        "streaming": false
+      }
+    }
+  }
+}

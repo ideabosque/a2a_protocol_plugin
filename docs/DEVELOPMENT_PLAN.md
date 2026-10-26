@@ -144,9 +144,13 @@ a2a_protocol_plugin/
   [Goose Integration Development Plan](GOOSE_INTEGRATION_PLAN.md); the
   deployment is the `goose` compose profile and `tests/goose/*` scripts in
   `docker-a2a-gateway`.
-- pi is planned as the sixth bridge handler (`agent_type: "pi"`). pi has no
-  network server, so it runs behind a small Node sidecar driving
-  `pi --mode rpc`; see the [Pi Integration Development Plan](PI_INTEGRATION_PLAN.md).
+- pi IS the sixth bridge handler (implemented on the `pi-integration` branch):
+  `handlers/pi_handler.py` plus its transport `handlers/pi_client.py`, selected
+  with `agent_type: "pi"`. pi has no network server, so it runs behind a small
+  Node sidecar driving `pi --mode rpc` (HTTP + SSE boundary, `PI_SIDE_*` spawn
+  namespace, session-file resume); design and the P1 spike transcript are in
+  the [Pi Integration Development Plan](PI_INTEGRATION_PLAN.md); the deployment
+  is the `pi` compose profile and `tests/pi/*` scripts in `docker-a2a-gateway`.
 
 ## Acceptance Criteria
 
