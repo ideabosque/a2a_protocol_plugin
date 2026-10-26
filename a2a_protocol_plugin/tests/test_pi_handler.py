@@ -738,6 +738,36 @@ class TestBusyPolicy:
         assert len(errors) == 1
         assert "409" in result["error"]
 
+    def test_busy_steer_json_ack_is_a_clean_empty_turn(self, logger):
+        """The real sidecar answers a steering/followUp during an active run
+        with a plain JSON acknowledgement (no SSE run window — the reply
+        streams on the FIRST caller's window). The client must return a
+        synthetic run_end instead of a transport error."""
+        server = MockPiSidecar()
+        transport = httpx.MockTransport(server.handler)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST" and request.url.path.endswith("/prompt"):
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/json"},
+                    json={"disposition": "steer", "sessionId": "pi-sid-1"},
+                )
+            return server.handler(request)
+
+        h = _handler(logger, httpx.MockTransport(handler),
+                     metadata={"pi_busy_behavior": "steer"})
+        q = _queue.Queue()
+        result = h.ask_model([{"role": "user", "content": "go"}],
+                             {"partition_key": "ep#x", "context_id": "ctx-ack"},
+                             stream_queue=q, stream_event=threading.Event())
+        chunks = _drain(q)
+        assert not [c for c in chunks if c["name"] == "error"]
+        assert "without run_end" not in str(result.get("error"))
+        assert result["metadata"]["pi"]["stopReason"] == "queued"
+        # no events streamed on this window (the reply rides the first caller's)
+        assert result["content"] == ""
+
 
 # ---------------------------------------------------------------------------
 # Extension-UI permission modes

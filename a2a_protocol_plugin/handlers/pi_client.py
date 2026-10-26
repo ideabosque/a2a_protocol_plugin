@@ -357,6 +357,24 @@ class PiSidecarClient:
                         + (f": {detail}" if detail else ""),
                         status_code=resp.status_code,
                     )
+                content_type = resp.headers.get("content-type", "")
+                if "text/event-stream" not in content_type:
+                    # A steering/followUp during the session's active run is
+                    # accepted with a plain JSON acknowledgement (the reply
+                    # streams on the FIRST request's run window).
+                    body = resp.read().decode("utf-8", errors="replace")
+                    try:
+                        ack = json.loads(body) if body else {}
+                    except ValueError:
+                        ack = {}
+                    run_end = {
+                        "type": _RUN_END_TYPE,
+                        "sessionId": session_id,
+                        "aborted": False,
+                        "disposition": ack.get("disposition") or "queued",
+                        "stopReason": "queued",
+                    }
+                    return run_end, []
                 for line in resp.iter_lines():
                     if total_deadline is not None and time.monotonic() > total_deadline:
                         self._abort_quietly(session_id)
