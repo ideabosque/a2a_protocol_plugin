@@ -52,7 +52,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 import time
 from typing import Any, Callable
 
@@ -147,7 +146,9 @@ class PiSidecarClient:
                 "and PI_SECRET_KEY",
                 status_code=resp.status_code,
             )
-        if resp.status_code in (404, 409) or resp.status_code >= 500:
+        # DEF-PI-005 fix (2026-10-25): only successful HTTP responses
+        # may be interpreted as a run or a queue acknowledgement.
+        if not 200 <= resp.status_code < 300:
             detail = ""
             try:
                 body = resp.json()
@@ -346,17 +347,9 @@ class PiSidecarClient:
                     write=30.0,
                 ),
             ) as resp:
-                if resp.status_code in (401, 403, 404, 409) or resp.status_code >= 500:
-                    body = resp.read().decode("utf-8", errors="replace")
-                    try:
-                        detail = str(resp.json().get("error") or "")
-                    except ValueError:
-                        detail = body[:200]
-                    raise PiSidecarError(
-                        f"pi sidecar prompt failed with HTTP {resp.status_code}"
-                        + (f": {detail}" if detail else ""),
-                        status_code=resp.status_code,
-                    )
+                if not 200 <= resp.status_code < 300:
+                    resp.read()
+                    self._check_status(resp, "prompt")
                 content_type = resp.headers.get("content-type", "")
                 if "text/event-stream" not in content_type:
                     # A steering/followUp during the session's active run is
@@ -367,6 +360,9 @@ class PiSidecarClient:
                         ack = json.loads(body) if body else {}
                     except ValueError:
                         ack = {}
+                    if (not isinstance(ack, dict)
+                            or ack.get("disposition") not in ("steer", "followUp", "queued")):
+                        raise PiSidecarError("pi sidecar returned an invalid prompt acknowledgement")
                     run_end = {
                         "type": _RUN_END_TYPE,
                         "sessionId": session_id,

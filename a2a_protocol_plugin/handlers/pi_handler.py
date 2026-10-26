@@ -205,6 +205,7 @@ class PiAgentHandler:
         # Set when the run window's finally ran (possibly deferring the turn
         # close because an ask-mode approval was still pending).
         self._run_done = threading.Event()
+        self._owns_session_run = True
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
@@ -229,6 +230,8 @@ class PiAgentHandler:
     def _ask_non_streaming(
         self, input_messages: list[dict[str, Any]], context: dict[str, Any]
     ) -> dict[str, Any]:
+        self._run_done.clear()
+        self._owns_session_run = True
         message, images = self._to_prompt(input_messages)
         chunks: list[str] = []
         client: PiSidecarClient | None = None
@@ -261,6 +264,8 @@ class PiAgentHandler:
         stream_queue: Any,
         stream_event: threading.Event,
     ) -> dict[str, Any]:
+        self._run_done.clear()
+        self._owns_session_run = True
         message, images = self._to_prompt(input_messages)
         chunks: list[str] = []
         client: PiSidecarClient | None = None
@@ -338,12 +343,20 @@ class PiAgentHandler:
         the next LLM call; ``reject`` surfaces the busy state as an error.
         """
         try:
-            return client.stream_prompt(
+            result = client.stream_prompt(
                 session_id, message, images=images,
                 on_event=on_event, timeout=self.timeout,
             )
+            if result[0].get("stopReason") == "queued":
+                self._owns_session_run = False
+            return result
         except PiSidecarError as e:
-            if not e.is_busy() or self.pi_busy_behavior == "reject":
+            if not e.is_busy():
+                raise
+            # DEF-PI-001 fix (2026-10-25): the original caller owns
+            # this session; rejecting or queuing must not close its run.
+            self._owns_session_run = False
+            if self.pi_busy_behavior == "reject":
                 raise
             streaming_behavior = _BUSY_STREAMING_BEHAVIOR[self.pi_busy_behavior]
             self.logger.info(
@@ -392,7 +405,7 @@ class PiAgentHandler:
                     "pi process kept open: ask-mode approval pending"
                 )
                 return
-            if session_id:
+            if session_id and self._owns_session_run:
                 try:
                     client.close_session(session_id)
                 except Exception as e:  # best effort; the reaper covers rest
@@ -1005,7 +1018,7 @@ class PiAgentHandler:
 
     @staticmethod
     def _session_id_from_event(event: dict[str, Any]) -> str:
-        """The sidecar stamps dialog events with the session id."""
+        """Read an optional session stamp; raw pi dialogs have no session id."""
         sid = event.get("sessionId") or event.get("session_id")
         return str(sid) if sid else ""
 

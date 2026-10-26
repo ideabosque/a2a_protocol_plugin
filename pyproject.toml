@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 name = "a2a-protocol-plugin"
 version = "0.0.1"
-description = "A2A Protocol Plugin — ports A2A-protocol-specific code, importing shared daemon plumbing from silvaengine_daemon"
+description = "A2A protocol endpoints and agent bridges for SilvaEngine, using shared silvaengine_daemon infrastructure"
 readme = "README.md"
 authors = ["bibow"]
 license = "MIT"

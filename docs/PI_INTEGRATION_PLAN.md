@@ -343,6 +343,10 @@ wiring in `handlers/config.py` (mirror `goose_*`).
 
 ## Acceptance Criteria
 
+The checkboxes below are the original acceptance checklist. Historical P1–P6
+completion notes describe earlier live runs; current review fixes and rerun
+results are recorded in docker-a2a-gateway `docs/test_results/`.
+
 - [ ] `message/send`, `message/stream`, `tasks/get` and `tasks/cancel` work
       end to end against a live pi sidecar.
 - [ ] Echoing the returned `contextId` (or resending `metadata.thread_uuid`)
@@ -364,7 +368,7 @@ wiring in `handlers/config.py` (mirror `goose_*`).
 
 | Risk | Mitigation |
 | --- | --- |
-| No network server; we own the sidecar. | Keep it small and stateless apart from the process pool; drive pi through its own `RpcClient`; unit-test framing and lifecycle. |
+| No network server; we own the sidecar. | Keep it small and stateless apart from the process pool; drive pi through the sidecar JSONL RPC driver (including extension UI responses); unit-test framing and lifecycle. |
 | Built-in tools run without approval. | Own container, workspace volume only, no host mounts, required secret; document that `pi_permission_mode` only covers extension dialogs; optionally restrict tools (`--tools` / `--exclude-tools`) per agent. |
 | One process per active session can exhaust memory. | `PI_MAX_PROCESSES` cap, idle reaping, 503 with a clear error when full. |
 | Session files grow without bound. | pi auto-compaction stays on; document volume cleanup. |

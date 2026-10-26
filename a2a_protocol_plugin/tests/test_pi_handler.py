@@ -813,6 +813,7 @@ class TestBusyPolicy:
         assert result["metadata"]["pi"]["stopReason"] == "queued"
         # no events streamed on this window (the reply rides the first caller's)
         assert result["content"] == ""
+        assert server.deletes == []
 
 
 # ---------------------------------------------------------------------------
@@ -1157,3 +1158,54 @@ class TestBridgeStreamingContract:
                                  transport)
         assert result.content == "Answer."
         assert "reasoning" not in result.metadata
+
+class TestPiReviewRegressions:
+    @pytest.mark.parametrize("status", [302, 400, 413, 422, 429, 500])
+    def test_prompt_http_errors_are_not_queue_acknowledgements(self, logger, status):
+        client = PiSidecarClient(
+            logger, "http://pi.test", http_transport=httpx.MockTransport(
+                lambda request: httpx.Response(status, json={"error": "rejected"})
+            )
+        )
+        try:
+            with pytest.raises(PiSidecarError) as error:
+                client.stream_prompt("sid", "hello")
+            assert error.value.status_code == status
+        finally:
+            client.close()
+
+    @pytest.mark.parametrize("body", [{}, {"error": "oops"}, [], None])
+    def test_invalid_json_ack_is_an_error(self, logger, body):
+        client = PiSidecarClient(
+            logger, "http://pi.test", http_transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=body)
+            )
+        )
+        try:
+            with pytest.raises(PiSidecarError, match="invalid prompt acknowledgement"):
+                client.stream_prompt("sid", "hello")
+        finally:
+            client.close()
+
+    @pytest.mark.parametrize("behavior", ["followUp", "steer", "reject"])
+    def test_busy_turn_never_closes_the_original_run(self, logger, behavior):
+        server = MockPiSidecar()
+        calls = []
+
+        def route(request):
+            if request.url.path.endswith("/prompt"):
+                calls.append(request)
+                if len(calls) == 1:
+                    return httpx.Response(409, json={"error": "already streaming"})
+                return httpx.Response(200, json={"disposition": behavior})
+            return server.handler(request)
+
+        h = _handler(logger, httpx.MockTransport(route),
+                     metadata={"pi_busy_behavior": behavior})
+        result = h.ask_model([{"role": "user", "content": "queued"}],
+                             {"partition_key": "ep#x", "context_id": "busy"})
+        assert server.deletes == []
+        if behavior == "reject":
+            assert "409" in result["error"]
+        else:
+            assert result["metadata"]["pi"]["stopReason"] == "queued"
