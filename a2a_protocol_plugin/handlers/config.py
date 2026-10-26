@@ -207,6 +207,20 @@ class Config:
     goose_stream_timeout: float = 300.0
     goose_approval_timeout: float = 120.0
 
+    # Phase P (pi bridge): pi sidecar (HTTP + SSE wrapping ``pi --mode rpc``)
+    # settings — see docs/PI_INTEGRATION_PLAN.md. The sidecar secret is sent
+    # as X-Secret-Key; provider credentials stay with pi itself (env vars),
+    # model selection rides per-agent metadata or PI_MODEL.
+    pi_api_url: str | None = None
+    pi_secret_key: str | None = None
+    pi_cwd: str = "/workspace"
+    pi_model: str = ""
+    pi_thinking: str = ""
+    pi_permission_mode: str = "auto_allow"
+    pi_busy_behavior: str = "followUp"
+    pi_stream_timeout: float = 300.0
+    pi_approval_timeout: float = 120.0
+
     # Phase 10: Core Engine (ai_agent_core_engine) gateway bridge settings
     core_engine_graphql_url: str | None = None
     core_engine_ws_url: str | None = None
@@ -347,6 +361,51 @@ class Config:
         )
         cls.goose_approval_timeout = float(
             setting.get("GOOSE_APPROVAL_TIMEOUT", setting.get("goose_approval_timeout", 120.0))
+        )
+
+        # pi sidecar bridge settings (Phase P). os.environ fallback: older
+        # gateway builds do not forward every PI_* key into the setting dict
+        # (same gap as GOOSE_*/A2A_SHOW_REASONING).
+        cls.pi_api_url = (
+            setting.get("PI_API_URL") or setting.get("pi_api_url")
+            or os.environ.get("PI_API_URL")
+        )
+        cls.pi_secret_key = (
+            setting.get("PI_SECRET_KEY") or setting.get("pi_secret_key")
+            or os.environ.get("PI_SECRET_KEY")
+        )
+        cls.pi_cwd = (
+            setting.get("PI_CWD") or setting.get("pi_cwd")
+            or os.environ.get("PI_CWD") or "/workspace"
+        )
+        cls.pi_model = (
+            setting.get("PI_MODEL") or setting.get("pi_model")
+            or os.environ.get("PI_MODEL") or ""
+        )
+        cls.pi_thinking = (
+            setting.get("PI_THINKING") or setting.get("pi_thinking")
+            or os.environ.get("PI_THINKING") or ""
+        )
+        cls.pi_permission_mode = (
+            setting.get("PI_PERMISSION_MODE")
+            or setting.get("pi_permission_mode")
+            or os.environ.get("PI_PERMISSION_MODE")
+            or "auto_allow"
+        )
+        cls.pi_busy_behavior = (
+            setting.get("PI_BUSY_BEHAVIOR")
+            or setting.get("pi_busy_behavior")
+            or os.environ.get("PI_BUSY_BEHAVIOR")
+            or "followUp"
+        )
+        cls.pi_stream_timeout = float(
+            setting.get("PI_STREAM_TIMEOUT", setting.get("pi_stream_timeout",
+                         os.environ.get("PI_STREAM_TIMEOUT", 300.0)))
+        )
+        cls.pi_approval_timeout = float(
+            setting.get("PI_APPROVAL_TIMEOUT",
+                        setting.get("pi_approval_timeout",
+                                    os.environ.get("PI_APPROVAL_TIMEOUT", 120.0)))
         )
 
         # Core Engine (ai_agent_core_engine) gateway bridge settings

@@ -31,6 +31,8 @@ a2a_protocol_plugin/
     core_engine_handler.py, hermes_handler.py, openclaw_handler.py  Agent handlers
     goose_handler.py      Agent handler for `goose serve` (ACP over HTTP)
     goose_acp_client.py   ACP-over-HTTP transport used only by goose_handler.py
+    pi_handler.py         Agent handler for the pi sidecar (HTTP + SSE)
+    pi_client.py          pi-sidecar transport (HTTP + SSE) used only by pi_handler.py
     conversation_map.py   Per-tenant conversation key -> backend session/thread id (a2a_settings)
   models/{dynamodb,postgresql}/      Backend models (pynamodb / SQLAlchemy)
   models/repositories/{dynamodb,postgresql}/  Repo classes registered with silvaengine_daemon
@@ -107,7 +109,8 @@ as `{"name": "token", "value": ..., "meta": {"data_format": "reasoning"}}` (see
 returns it as `metadata.reasoning` — unless `show_reasoning` is off (`resolve_show_reasoning`:
 request `metadata.show_reasoning` > agent metadata `show_reasoning` > `A2A_SHOW_REASONING`,
 default on), in which case it is dropped. Never push a copy of the answer as reasoning.
-Use `hermes_handler.py` / `openclaw_handler.py` / `goose_handler.py` as references;
+Use `hermes_handler.py` / `openclaw_handler.py` / `goose_handler.py` /
+`pi_handler.py` as references;
 register test agents with
 `tests/register_*_agent.py`.
 
@@ -127,10 +130,13 @@ PYTHONPATH="../silvaengine_daemon;." python -m pytest a2a_protocol_plugin/tests 
   without one.
 - Live tests (`test_*_live.py`, `test_a2a_proxy_e2e.py`) only run with `A2A_RUN_LIVE_API_TESTS=1`
   and real endpoints. Exception: `test_goose_live.py` is gated on `A2A_RUN_LIVE_GOOSE_TESTS=1`
-  (plus `GOOSE_API_URL` / `GOOSE_LIVE_KEY`).
+  (plus `GOOSE_API_URL` / `GOOSE_LIVE_KEY`), and `test_pi_live.py` on `A2A_RUN_LIVE_PI_TESTS=1`
+  (plus `PI_LIVE_URL` / `PI_LIVE_KEY`).
 - `test_goose_handler.py` runs against a scripted ACP server (`httpx.MockTransport`) built from
   `goose_acp_transcript.json`, which was captured from goose 1.53.0. Re-capture it when the pinned
-  goose version changes.
+  goose version changes. `test_pi_handler.py` scripts the pi sidecar HTTP+SSE surface directly
+  (frames transcribed from pi v1.4.0 RPC docs); re-verify against a live sidecar with
+  `test_pi_live.py` when the pinned pi version changes (docker-a2a-gateway `pi/` sibling).
 - Filter with markers (`-m unit`, `-m a2a`, ...) — markers are declared in `tests/pytest.ini`
   and `conftest.py`; `--strict-markers` is on, so register new ones.
 - Protocol compliance: `test_a2a_protocol_compliance.py`, `a2a_tck_checker.py`,

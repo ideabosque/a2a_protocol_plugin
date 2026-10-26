@@ -1,7 +1,9 @@
 # Pi Integration Development Plan
 
-Status: planning baseline (not started)
-Last updated: 2026-10-15
+Status: Phase P3 + P4 implemented (handler, transport, tests) — P1 spike and live
+sidecar validation pending
+Last updated: 2026-10-25
+Branch: `pi-integration` (a2a_protocol_plugin + docker-a2a-gateway)
 Related: [A2A Protocol Plugin Development Plan](DEVELOPMENT_PLAN.md),
 [Goose Integration Development Plan](GOOSE_INTEGRATION_PLAN.md)
 
