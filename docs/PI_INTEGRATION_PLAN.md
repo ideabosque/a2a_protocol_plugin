@@ -1,11 +1,12 @@
 # Pi Integration Development Plan
 
-Status: P1–P5 implemented on the `pi-integration` branches (a2a_protocol_plugin +
-docker-a2a-gateway): P3 handler/transport, P4 tests (35 unit + live gate), P5
-sidecar + compose profile + tests/pi scripts; P1 spike executed 2026-10-25
-(14/14 checks, transcript in tests/pi_rpc_transcript.json); P6 docs in progress
-Remaining: end-to-end run through the gateway (tests/pi/test_gateway_live.py +
-test_sse_live.py against the upped stack) and merge-back
+Status: COMPLETE — P1–P6 done on the `pi-integration` branches (a2a_protocol_plugin +
+docker-a2a-gateway). P1 spike 14/14 (transcript: tests/pi_rpc_transcript.json);
+P3 handler/transport; P4 tests (39 unit, live gated); P5 sidecar + compose +
+tests/pi scripts; gateway-level live E2E green (test_gateway_live 10/10 incl.
+tasks/cancel → CANCELED; test_sse_live 7/7 incl. tagged reasoning +
+--hide-reasoning; hello / hello_sse PASS)
+Merged back: pending on both repos' pi-integration branches
 Last updated: 2026-10-25
 Branch: `pi-integration` (a2a_protocol_plugin + docker-a2a-gateway)
 Related: [A2A Protocol Plugin Development Plan](DEVELOPMENT_PLAN.md),
