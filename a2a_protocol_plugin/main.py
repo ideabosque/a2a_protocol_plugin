@@ -11,7 +11,6 @@ from typing import Any, Dict, List
 from graphene import Schema
 from silvaengine_daemon.serialization import (
     dumps as _dumps,
-    _json_default,
 )
 from silvaengine_daemon.async_utils import run_async as _run_async_impl
 from silvaengine_daemon.partitioning import apply_partition_defaults
@@ -176,6 +175,11 @@ class A2ADaemonEngine(Graphql):
             request_metadata = params.get("params", {}).get("metadata", {})
             if isinstance(request_metadata, dict):
                 context_state.update(request_metadata)
+            # DEF-BANYAN-001 fix (2026-10-26): request metadata is untrusted —
+            # merging it last could override the gateway-derived partition_key
+            # (tenant escape in every backend handler, incl. the new Banyanos
+            # handler). Trusted values must be (re)set after merging untrusted
+            # ones. See handlers/a2a_server.py for the bridge-side twin fix.
             method_params = params.get("params", {})
             if isinstance(method_params, dict):
                 for source_key, target_key in (
@@ -191,6 +195,9 @@ class A2ADaemonEngine(Graphql):
                     if source_key in context_state and target_key not in context_state:
                         context_state[target_key] = context_state[source_key]
             context_state["method"] = params.get("method")
+            # Trusted partition wins, always — re-assert after all untrusted
+            # merges above.
+            context_state["partition_key"] = partition_key
 
             context = ServerCallContext(state=context_state)
             method = params.get("method", "")

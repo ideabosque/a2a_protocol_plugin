@@ -76,6 +76,10 @@ AGENT_TYPE_MAP: dict[str, dict[str, str]] = {
         "module_name": "a2a_protocol_plugin.handlers.pi_handler",
         "class_name": "PiAgentHandler",
     },
+    "banyanos_agent": {
+        "module_name": "a2a_protocol_plugin.handlers.banyanos_agent_handler",
+        "class_name": "BanyanosAgentHandler",
+    },
     "a2a_proxy": {
         "module_name": "a2a_protocol_plugin.handlers.a2a_proxy_handler",
         "class_name": "A2AProxyHandler",
@@ -148,7 +152,8 @@ def resolve_show_reasoning(
     """Whether the model's reasoning reaches the client for this turn.
 
     Priority: the request (``params.metadata.show_reasoning``) > the agent
-    (agent metadata ``show_reasoning``) > ``Config.a2a_show_reasoning``
+    (agent metadata ``show_reasoning``) > BanyanOS-specific default
+    (``BANYANOS_SHOW_REASONING``, when set) > ``Config.a2a_show_reasoning``
     (``A2A_SHOW_REASONING``, default on). Reasoning never enters the answer
     either way; this only decides whether it is streamed and returned.
     """
@@ -157,6 +162,20 @@ def resolve_show_reasoning(
     for value in (request_value, agent_value):
         if value is not None and value != "":
             return _truthy(value)
+    # DEF-BNY-003 (2026-10-27): let BanyanOS select its own default
+    # while preserving request/agent overrides and other backends.
+    config = agent_config or {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    is_banyanos = (
+        metadata.get("agent_type") == "banyanos_agent"
+        or config.get("class_name") == "BanyanosAgentHandler"
+        or metadata.get("class_name") == "BanyanosAgentHandler"
+        or (config.get("module_name") or metadata.get("module_name"))
+        == "a2a_protocol_plugin.handlers.banyanos_agent_handler"
+    )
+    banyanos_default = getattr(Config, "banyanos_show_reasoning", None)
+    if is_banyanos and banyanos_default is not None:
+        return _truthy(banyanos_default)
     return bool(getattr(Config, "a2a_show_reasoning", True))
 
 
@@ -927,6 +946,7 @@ async def execute_ai_agent_streaming(
 
     # 6. Prepare streaming primitives
     include_reasoning = resolve_show_reasoning(agent_config, show_reasoning)
+    context["show_reasoning"] = include_reasoning
     stream_queue: _queue.Queue[Any] = _queue.Queue()
     stream_event = threading.Event()
 

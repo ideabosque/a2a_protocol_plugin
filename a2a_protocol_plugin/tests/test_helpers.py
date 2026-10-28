@@ -22,6 +22,34 @@ sys.path.insert(
 )
 from silvaengine_utility import Serializer
 
+class FakeBanyanosWS:
+    """Scripted banyan_ws connection for Banyan transport tests.
+
+    Mirrors the injectable ``ws_connect`` surface of
+    ``BanyanosClient``/``CoreEngineAgentHandler``: ``recv(timeout)``
+    pops scripted frames (close => None), ``send`` records, ``close`` marks
+    closed (a closed socket stops yielding, like a real disconnect).
+    """
+
+    CONNECTION_ID = "conn-test-123"
+
+    def __init__(self, frames):
+        self._frames = list(frames)
+        self.sent: list[Any] = []
+        self.closed = False
+
+    def recv(self, timeout=None):
+        if self.closed or not self._frames:
+            return None
+        frame = self._frames.pop(0)
+        return json.dumps(frame)
+
+    def send(self, text):
+        self.sent.append(text)
+
+    def close(self):
+        self.closed = True
+
 logger = logging.getLogger("test_a2a_protocol_plugin")
 
 

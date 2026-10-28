@@ -16,7 +16,6 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List
 
 import boto3
@@ -229,6 +228,19 @@ class Config:
     core_engine_updated_by: str | None = None
     core_engine_stream_timeout: float = 120.0
 
+    # Banyanos bridge (agent_engine via docker-banyanos-gateway) settings — see
+    # docs/BANYANOS_INTEGRATION_PLAN.md. All values are trusted deployment
+    # configuration; agent metadata may override per-agent, request metadata
+    # never does. banyanos_stream_timeout covers a full subscription drain
+    # (connect + WS + tool rounds).
+    banyanos_graphql_url: str | None = None
+    banyanos_ws_url: str | None = None
+    banyanos_token: str | None = None
+    banyanos_agent_id: str | None = None
+    banyanos_stream_timeout: float = 180.0
+    banyanos_show_tool_progress: bool = False
+    banyanos_show_reasoning: bool | None = None
+
     @classmethod
     def initialize(cls, logger: logging.Logger, **setting: Dict[str, Any]) -> None:
         try:
@@ -431,6 +443,46 @@ class Config:
         )
         cls.core_engine_stream_timeout = float(
             setting.get("CORE_ENGINE_STREAM_TIMEOUT", setting.get("core_engine_stream_timeout", 120.0))
+        )
+
+        # Banyanos bridge (agent_engine) settings. os.environ fallback: older
+        # gateway builds do not forward every setting key (same pattern as
+        # the pi / core-engine blocks above).
+        cls.banyanos_graphql_url = (
+            setting.get("BANYANOS_GRAPHQL_URL")
+            or setting.get("banyanos_graphql_url")
+            or os.environ.get("BANYANOS_GRAPHQL_URL")
+        )
+        cls.banyanos_ws_url = (
+            setting.get("BANYANOS_WS_URL")
+            or setting.get("banyanos_ws_url")
+            or os.environ.get("BANYANOS_WS_URL")
+        )
+        cls.banyanos_token = (
+            setting.get("BANYANOS_TOKEN")
+            or setting.get("banyanos_token")
+            or os.environ.get("BANYANOS_TOKEN")
+        )
+        cls.banyanos_agent_id = (
+            setting.get("BANYANOS_AGENT_ID")
+            or setting.get("banyanos_agent_id")
+            or os.environ.get("BANYANOS_AGENT_ID")
+        )
+        cls.banyanos_stream_timeout = float(
+            setting.get("BANYANOS_STREAM_TIMEOUT",
+                        setting.get("banyanos_stream_timeout",
+                                    os.environ.get("BANYANOS_STREAM_TIMEOUT", 180.0)))
+        )
+        reasoning = setting.get("BANYANOS_SHOW_REASONING",
+            setting.get("banyanos_show_reasoning",
+                        os.environ.get("BANYANOS_SHOW_REASONING")))
+        cls.banyanos_show_reasoning = (
+            None if reasoning is None or reasoning == "" else _truthy(reasoning)
+        )
+        cls.banyanos_show_tool_progress = bool(
+            setting.get("BANYANOS_SHOW_TOOL_PROGRESS",
+                        setting.get("banyanos_show_tool_progress",
+                                    os.environ.get("BANYANOS_SHOW_TOOL_PROGRESS", False)))
         )
 
     @classmethod

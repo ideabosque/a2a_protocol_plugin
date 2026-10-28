@@ -170,6 +170,15 @@ class A2AServerCallContextBuilder(DefaultServerCallContextBuilder):
             metadata["method"] = method
 
         if isinstance(metadata, dict):
+            # DEF-BANYAN-001 fix (2026-10-26): request/message metadata is
+            # untrusted — it must not override reserved call-context state
+            # already established from gateway-derived values (e.g.
+            # ``partition_key``, ``headers``). Banyanos identity (BanyanosAgent
+            # handler) and every other backend trust these keys. Drop any
+            # metadata key that would clobber a reserved key.
+            _RESERVED_STATE_KEYS = ("partition_key", "headers", "endpoint_id", "part_id")
+            for reserved in _RESERVED_STATE_KEYS:
+                metadata.pop(reserved, None)
             state.update(metadata)
 
 
