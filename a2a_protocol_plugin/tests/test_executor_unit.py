@@ -7,7 +7,7 @@ These tests use mocks to avoid DynamoDB dependencies.
 """
 
 import logging
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from a2a.server.agent_execution import RequestContext
@@ -211,6 +211,209 @@ class TestExecutorIntegration:
         # Verify task was fetched and saved
         task_store.get.assert_called_once_with("test-task")
         task_store.save.assert_called_once()
+
+
+class TestMessageResponseErrorPropagation:
+    """DEF-B001 (plan finding #4): bridge handler errors must surface as a
+    structurally FAILED **Task**, never a completed Message.
+
+    Live-verified 2026-10-29: a Banyanos backend failure arrived at callers
+    as a completed text Message ("AI agent error: ..." as content) and the
+    a2a_tasks row was written status="failed" — the two disagree on the
+    wire. These tests lock the structurally-failed reply shape.
+    """
+
+    @pytest.fixture
+    def executor(self):
+        """Executor with a mocked a2a_core (task persistence path)."""
+        logger = logging.getLogger("test")
+        config = Mock()
+        config.logger = None
+        core = AsyncMock()
+        core.insert_update_a2a_task = AsyncMock(return_value={})
+        config.a2a_core = core
+        return A2ADaemonExecutor(logger=logger, config=config)
+
+    @pytest.fixture
+    def event_queue(self):
+        queue = Mock(spec=EventQueue)
+        queue.enqueue_event = AsyncMock()
+        return queue
+
+    @staticmethod
+    def _event_text(task) -> str:
+        """Extract the Task's status message text across SDK variants."""
+        message = getattr(getattr(task, "status", None), "message", None)
+        if message is None:
+            return ""
+        return "".join(
+            str(getattr(part, "text", ""))
+            for part in (getattr(message, "parts", None) or [])
+        )
+
+    @staticmethod
+    def _context_with_task_id(task_id: str):
+        """Request context Mock carrying the SDK-generated task_id."""
+        context = Mock(spec=RequestContext)
+        context.message = Mock()  # text-only message; parts empty
+        context.message.parts = []
+        context.get_user_input = Mock(return_value="Hi")
+        context.get = Mock(
+            side_effect=lambda key, default=None: {
+                "task_id": task_id,
+            }.get(key, default)
+        )
+        context.call_context = Mock()
+        context.call_context.state = {}
+        return context
+
+    @pytest.mark.asyncio
+    async def test_handler_error_emits_failed_task(self, executor, event_queue):
+        """A handler error must emit one Task with FAILED state + reason."""
+        from a2a.types import Task as A2aTask
+
+        from a2a_protocol_plugin.handlers.a2a_ai_agent_utility import BridgeResult
+
+        context = self._context_with_task_id("sdk-task-1")
+        with patch(
+            "a2a_protocol_plugin.handlers.a2a_ai_agent_utility"
+            ".execute_ai_agent_non_streaming",
+            new=AsyncMock(
+                return_value=BridgeResult(
+                    content="",
+                    role="agent",
+                    error="Banyanos transport error: Backend HTTP error",
+                )
+            ),
+        ):
+            await executor._handle_message_response(
+                "Hi", event_queue, "test-endpoint#test-part", request_context=context
+            )
+
+        event_queue.enqueue_event.assert_awaited_once()
+        event = event_queue.enqueue_event.call_args[0][0]
+        # Structurally a Task (Message = false success) with FAILED state.
+        assert isinstance(event, A2aTask)
+        assert event.status.state == TaskState.Value("TASK_STATE_FAILED")
+        # The reply is trackable under the SDK task id.
+        assert event.id == "sdk-task-1"
+        # The safe reason text remains human-visible (status message).
+        reason = self._event_text(event)
+        assert "Banyanos transport error" in reason
+
+    @pytest.mark.asyncio
+    async def test_handler_error_task_persisted_failed(
+        self, executor, event_queue
+    ):
+        """The failed completion must also be persisted (existing contract)."""
+        from a2a_protocol_plugin.handlers.a2a_ai_agent_utility import BridgeResult
+
+        context = self._context_with_task_id("sdk-task-1")
+        with patch(
+            "a2a_protocol_plugin.handlers.a2a_ai_agent_utility"
+            ".execute_ai_agent_non_streaming",
+            new=AsyncMock(
+                return_value=BridgeResult(content="", role="agent", error="boom")
+            ),
+        ):
+            await executor._handle_message_response(
+                "Hi", event_queue, "test-endpoint#test-part", request_context=context
+            )
+
+        persist = executor.config.a2a_core.insert_update_a2a_task
+        assert persist.await_count >= 2  # in_progress + failed completion(s)
+        # Final write (the completion) must be the failed-terminal status.
+        final_status = persist.await_args_list[-1].kwargs.get("status")
+        assert final_status == "failed"
+        assert persist.await_args_list[-1].kwargs.get("task_id") == "sdk-task-1"
+
+    @pytest.mark.asyncio
+    async def test_success_still_emits_message(self, executor, event_queue):
+        """Success path unchanged: a completed reply Message with content."""
+        from a2a.types import Message as A2aMessage
+
+        from a2a_protocol_plugin.handlers.a2a_ai_agent_utility import BridgeResult
+
+        with patch(
+            "a2a_protocol_plugin.handlers.a2a_ai_agent_utility"
+            ".execute_ai_agent_non_streaming",
+            new=AsyncMock(
+                return_value=BridgeResult(content="OK", role="agent", error=None)
+            ),
+        ):
+            await executor._handle_message_response(
+                "Hi", event_queue, "test-endpoint#test-part", request_context=None
+            )
+
+        event_queue.enqueue_event.assert_awaited()
+        event = event_queue.enqueue_event.call_args[0][0]
+        # Success remains a plain reply Message (not a Task).
+        assert isinstance(event, A2aMessage)
+        text = "".join(
+            str(getattr(part, "text", ""))
+            for part in (getattr(event, "parts", None) or [])
+        )
+        assert text == "OK"
+    @pytest.mark.asyncio
+    async def test_continuation_emits_working_task_not_completed(
+        self, executor, event_queue
+    ):
+        """DEF-B002 (plan finding #4): a queued continuation must keep the A2A
+        task nonterminal (WORKING Task with partial content) — never a
+        completed Message and never a FAILED terminal."""
+        from a2a.types import Task as A2aTask
+
+        from a2a_protocol_plugin.handlers.a2a_ai_agent_utility import BridgeResult
+
+        context = self._context_with_task_id("sdk-task-2")
+        with patch(
+            "a2a_protocol_plugin.handlers.a2a_ai_agent_utility"
+            ".execute_ai_agent_non_streaming",
+            new=AsyncMock(
+                return_value=BridgeResult(
+                    content="partial answer so far",
+                    role="agent",
+                    error=None,
+                    metadata={"banyanos_continuation": "queued"},
+                )
+            ),
+        ):
+            await executor._handle_message_response(
+                "Hi", event_queue, "test-endpoint#test-part", request_context=context
+            )
+
+        event_queue.enqueue_event.assert_awaited_once()
+        event = event_queue.enqueue_event.call_args[0][0]
+        assert isinstance(event, A2aTask)
+        assert event.status.state == TaskState.Value("TASK_STATE_WORKING")
+        assert "partial answer" in self._event_text(event)
+
+    @pytest.mark.asyncio
+    async def test_continuation_task_row_stays_in_progress(
+        self, executor, event_queue
+    ):
+        """The continuation must not write a terminal status to the task row."""
+        from a2a_protocol_plugin.handlers.a2a_ai_agent_utility import BridgeResult
+
+        context = self._context_with_task_id("sdk-task-2")
+        with patch(
+            "a2a_protocol_plugin.handlers.a2a_ai_agent_utility"
+            ".execute_ai_agent_non_streaming",
+            new=AsyncMock(
+                return_value=BridgeResult(
+                    content="partial", role="agent",
+                    metadata={"banyanos_continuation": "queued"},
+                )
+            ),
+        ):
+            await executor._handle_message_response(
+                "Hi", event_queue, "test-endpoint#test-part", request_context=context
+            )
+
+        persist = executor.config.a2a_core.insert_update_a2a_task
+        written = [call.kwargs.get("status") for call in persist.await_args_list]
+        assert written, "continuation row write expected"
+        assert all(w == "in_progress" for w in written)
 
 
 if __name__ == "__main__":

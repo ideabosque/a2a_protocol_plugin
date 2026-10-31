@@ -448,8 +448,18 @@ def _in_process_send(run: Dict[str, Any], endpoint_id: str, part_id: str, task_i
 
 
 def start_scheduler() -> None:
-    """Gateway ``on_startup`` hook: start the dispatcher thread once per process."""
+    """Gateway ``on_startup`` hook: start the dispatcher thread once per process.
+
+    Also starts the banyanos continuation poller (DEF-B002's observation
+    worker) with an independent lifecycle/flag
+    (``BANYANOS_CONTINUATION_POLL_ENABLED``) — disabling the cron scheduler
+    must not disable continuation reconciliation.
+    """
     global _instance
+    from .banyanos_continuation_poller import start_poller
+
+    start_poller()
+
     if os.environ.get("A2A_SCHEDULER_ENABLED", "true").strip().lower() in ("0", "false", "no", "off"):
         logger.info("A2A scheduler disabled (A2A_SCHEDULER_ENABLED)")
         return
@@ -466,6 +476,12 @@ def start_scheduler() -> None:
 def stop_scheduler() -> None:
     """Gateway ``on_shutdown`` hook."""
     global _instance
+    try:
+        from .banyanos_continuation_poller import stop_poller
+
+        stop_poller()
+    except Exception:
+        pass
     with _instance_lock:
         if _instance is not None:
             _instance.stop()

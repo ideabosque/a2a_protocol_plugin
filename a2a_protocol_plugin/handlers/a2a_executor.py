@@ -39,6 +39,11 @@ try:
 except ImportError:
     new_agent_text_message = None
 
+from .conversation_map import (  # noqa: E402 — SDK-optional module
+    default_setting_repo as _reconcile_setting_repo,
+    store_mapping as _store_mapping,
+)
+
 __author__ = "SilvaEngine Team"
 
 
@@ -255,6 +260,7 @@ def _agent_error_task_event(
     task_id: str | None,
     context_id: str | None,
     state_name: str = "FAILED",
+    error_text: str | None = None,
 ) -> Any:
     """Emit a terminal **Task** event carrying the routing ids (DEF-004 fix).
 
@@ -267,11 +273,24 @@ def _agent_error_task_event(
     ``on_message_send`` returns it as the result). A bare
     ``TaskStatusUpdateEvent`` is rejected ("Agent should enqueue Task before
     TaskStatusUpdateEvent event").
+
+    ``error_text`` (optional): safe reason text carried in the Task's status
+    message, so the failed result is structurally distinguishable from a
+    completed answer AND the human-readable reason still reaches callers and
+    tasks/get readers (DEF-B001, 2026-10-29).
     """
+    status = TaskStatus(state=_task_state(state_name))
+    if error_text:
+        try:
+            # proto runtime forbids assigning message fields directly;
+            # CopyFrom is the supported shape (and copies, not aliases).
+            status.message.CopyFrom(_agent_text_message(error_text, context_id))
+        except Exception:  # pragma: no cover - SDK variants without status.message
+            pass
     return Task(
         id=task_id or "",
         context_id=context_id or "",
-        status=TaskStatus(state=_task_state(state_name)),
+        status=status,
     )
 
 
@@ -723,25 +742,89 @@ class A2ADaemonExecutor(AgentExecutor):
                     ) or None
 
                 if result.error:
-                    if "agent not found" in str(result.error).lower():
-                        # DEF-004 fix: structurally failed response — a FAILED
-                        # Task event is the only failed shape the SDK's
-                        # message/send consumer accepts; it persists via
-                        # save_task_event and is returned to the caller.
+                    # DEF-B001 fix (2026-10-29, plan finding #4): every bridge
+                    # handler error now produces a structurally FAILED **Task**
+                    # — never a completed Message. Previously only the "agent
+                    # not found" routing error took this shape; every other
+                    # handler failure was emitted as a completed text Message
+                    # ("AI agent error: ..." as answer content), so any caller
+                    # decoding the A2A lifecycle observed a false success
+                    # (HTTP 200 + completed response) for a backend failure.
+                    # The safe reason text rides in the Task's status message;
+                    # the failed completion is still persisted below with
+                    # status="failed" (unchanged).
+                    await _emit_event(
+                        event_queue,
+                        _agent_error_task_event(
+                            reply_task_id,
+                            effective_context_id,
+                            "FAILED",
+                            error_text=f"AI agent error: {result.error}",
+                        ),
+                    )
+                else:
+                    # DEF-B002 (plan finding #4): queued continuation — the
+                    # handler result is a partial artifact and the backend
+                    # task stays RUNNING. Emit a nonterminal WORKING **Task**
+                    # (carrying the partial content in its status message)
+                    # so the A2A task is not terminated early; nothing else
+                    # is enqueued in the synchronous slice — a reconciliation
+                    # worker (plan Phase 3/4) owns the later terminal update.
+                    if (result.metadata or {}).get("banyanos_continuation") == "queued":
+                        partial_note = (
+                            result.content
+                            or "Agent task continues asynchronously "
+                            "(queued continuation); observe via tasks/get."
+                        )
                         await _emit_event(
                             event_queue,
                             _agent_error_task_event(
-                                reply_task_id, effective_context_id, "FAILED"
+                                reply_task_id,
+                                effective_context_id,
+                                "WORKING",
+                                error_text=str(partial_note),
                             ),
                         )
-                    else:
-                        reply = _agent_text_message(
-                            f"AI agent error: {result.error}", effective_context_id
+                        # Store the reconcile record: reply task id -> backend
+                        # task id (the durable correlation the poller reads).
+                        # Failures are logged, never raised (best effort).
+                        backend_task_id = str(
+                            (result.metadata or {}).get("banyanos_backend_task_id") or ""
                         )
-                        await _emit_event(
-                            event_queue, _stamp_message_ids(reply, reply_task_id)
-                        )
-                else:
+                        try:
+                            _store_reconcile_record(
+                                partition_key,
+                                str(reply_task_id or task_id or ""),
+                                backend_task_id,
+                                str(context_id or ""),
+                                self.logger,
+                            )
+                        except Exception as e:
+                            self.logger.warning(
+                                "banyanos reconcile record store failed: %s", e
+                            )
+                        # Keep the task row nonterminal (no completion write).
+                        if hasattr(self.config.a2a_core, "insert_update_a2a_task"):
+                            try:
+                                await self.config.a2a_core.insert_update_a2a_task(
+                                    partition_key=partition_key,
+                                    task_id=reply_task_id or task_id or None,
+                                    task_type="message_response",
+                                    assigned_agent_id=agent_uuid or "",
+                                    status="in_progress",
+                                    output_data=(
+                                        {"content": partial_note[:500]}
+                                        if partial_note
+                                        else None
+                                    ),
+                                    context_id=effective_context_id,
+                                    updated_by="a2a_daemon",
+                                )
+                            except Exception as e:
+                                self.logger.warning(
+                                    f"A2A continuation task persist failed: {e}"
+                                )
+                        return
                     reply = _agent_parts_message(
                         text=result.content,
                         files=result.output_files,

@@ -364,6 +364,10 @@ class BanyanosAgentHandler:
         status = "SUCCESS" if result_message.get("success") else "FAILED"
         message_id = str(result_message.get("messageId")
                           or result_message.get("message_id") or "")
+        # 发现 #4/Phase 3 配套修复：SendMessage 落库了真实后端任务行 ——
+        # 这里取出其对后端引用，供续跑观察/对账层（reconciliation）查询终态。
+        backend_task_id = str(result_message.get("taskId")
+                              or result_message.get("task_id") or "")
         latency = (result_message.get("latencyMs")
                    or result_message.get("latency_ms"))
 
@@ -375,6 +379,8 @@ class BanyanosAgentHandler:
             "banyanos_agent_id": identity.banyanos_agent_id,
             "latency_ms": latency,
         }
+        if backend_task_id:
+            metadata["banyanos_backend_task_id"] = backend_task_id
         metadata["banyanos_invocation"] = {
             "id": message_id,
             "agent_id": metadata["banyanos_agent_id"],
@@ -387,7 +393,16 @@ class BanyanosAgentHandler:
             "role": "agent",
             "metadata": metadata,
         }
-        if status == "FAILED":
+        # 发现 #4（DEF-B002，2026-10-29）：SendMessage 已投递异步续跑时
+        # 本轮为部分产物、任务保持非终态 —— 不是失败也不是完成。置标记，
+        # 执行器据此返回 WORKING 任务（观察继续），不提前终态。
+        continuation_queued = bool(
+            result_message.get("continuationQueued")
+            or result_message.get("continuation_queued")
+        )
+        if continuation_queued:
+            metadata["banyanos_continuation"] = "queued"
+        elif status == "FAILED":
             result["error"] = ("Banyanos SendMessage failed: "
                                + str(content or "unspecified backend error"))
         return result

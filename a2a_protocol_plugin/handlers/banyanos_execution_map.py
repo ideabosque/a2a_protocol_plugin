@@ -229,6 +229,43 @@ def record_execution(
     )
 
 
+def _store_reconcile_record(
+    partition_key: str,
+    reply_task_id: str,
+    backend_task_id: str,
+    context_id: str,
+    logger: logging.Logger,
+) -> bool:
+    """Persist the continuation reconciliation record (DEF-B002 companion).
+
+    Reply (A2A) task id -> backend agent task id + context correlation, in
+    ``a2a_settings`` under key ``banyanos_reconcile#<reply_task_id>``. The
+    continuation poller (``banyanos_continuation_poller``) reads these to
+    resolve terminal backend states for A2A tasks left WORKING.
+    """
+    if not reply_task_id or not backend_task_id:
+        logger.warning(
+            "banyanos reconcile record skipped (reply_task_id=%r, "
+            "backend_task_id=%r)", reply_task_id, backend_task_id,
+        )
+        return False
+    repo = default_setting_repo()
+    if repo is None:
+        logger.warning("banyanos reconcile record not persisted (no repo)")
+        return False
+    return bool(store_mapping(
+        repo, partition_key, partition_key.split("#", 1)[0] if "#" in partition_key else "",
+        partition_key.split("#", 1)[1] if "#" in partition_key else "",
+        f"banyanos_reconcile#{_safe(reply_task_id)}",
+        {
+            "backend_task_id": backend_task_id,
+            "context_id": context_id or "",
+            "state": "POLLING",
+        },
+        "banyanos_reconciler", logger,
+    ))
+
+
 __all__ = [
     "invocation_digest",
     "load_session_id",
