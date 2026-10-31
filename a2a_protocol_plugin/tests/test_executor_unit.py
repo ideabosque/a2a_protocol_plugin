@@ -268,6 +268,22 @@ class TestMessageResponseErrorPropagation:
         return context
 
     @pytest.mark.asyncio
+    async def test_empty_input_emits_rejected_task(self, executor, event_queue):
+        """Empty user input is declined as a REJECTED Task, never a reply Message."""
+        from a2a.types import Task as A2aTask
+
+        context = self._context_with_task_id("sdk-task-empty")
+        context.get_user_input = Mock(return_value="")
+        await executor.execute(context, event_queue)
+
+        event_queue.enqueue_event.assert_awaited_once()
+        event = event_queue.enqueue_event.call_args[0][0]
+        assert isinstance(event, A2aTask)
+        assert event.status.state == TaskState.Value("TASK_STATE_REJECTED")
+        assert event.id == "sdk-task-empty"
+        assert "No user input provided" in self._event_text(event)
+
+    @pytest.mark.asyncio
     async def test_handler_error_emits_failed_task(self, executor, event_queue):
         """A handler error must emit one Task with FAILED state + reason."""
         from a2a.types import Task as A2aTask

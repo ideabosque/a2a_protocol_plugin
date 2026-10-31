@@ -540,7 +540,22 @@ class A2ADaemonExecutor(AgentExecutor):
             if not user_input:
                 error_msg = "No user input provided in request context"
                 self.logger.error(error_msg)
-                await _emit_event(event_queue, _agent_text_message(error_msg))
+                # A completed reply Message here read as a successful answer
+                # (orchestration REMOTE nodes went SUCCESS without running the
+                # agent); an empty request is declined as a REJECTED Task.
+                await _emit_event(
+                    event_queue,
+                    _agent_error_task_event(
+                        _context_get_any(
+                            request_context, "task_id", "taskId", default=""
+                        ),
+                        _context_get_any(
+                            request_context, "context_id", "contextId", default=""
+                        ) or None,
+                        "REJECTED",
+                        error_text=error_msg,
+                    ),
+                )
                 return
 
             # Extract partition key from context (our multi-tenant extension)
