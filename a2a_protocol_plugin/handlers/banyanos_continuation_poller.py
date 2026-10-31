@@ -139,7 +139,7 @@ class ContinuationPoller:
         db_session = getattr(Config, "db_session", None)
         if db_session is None:
             return []
-        from .models.postgresql.a2a_task import A2ATaskModel
+        from a2a_protocol_plugin.models.postgresql.a2a_task import A2ATaskModel
 
         rows = (
             db_session.query(A2ATaskModel)
