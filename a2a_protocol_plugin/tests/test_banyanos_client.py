@@ -172,6 +172,27 @@ def test_missing_data_field_is_protocol_error(logger):
     assert exc_info.value.category == "protocol"
 
 
+@pytest.mark.unit
+def test_send_message_selects_backend_task_refs(logger):
+    """sendMessage must request taskId/continuationQueued (execution map + dedup observe)."""
+    def router(request):
+        record = json.loads(request.content.decode())
+        assert "sendMessage(" in record["query"]
+        assert "taskId" in record["query"]
+        assert "continuationQueued" in record["query"]
+        return httpx.Response(200, json=_ok({"sendMessage": {
+            "success": True, "messageId": "msg-1", "sessionId": "s1",
+            "role": "ASSISTANT", "content": "Hello", "latencyMs": 5,
+            "continuationQueued": False, "taskId": "task-row-1"}}))
+
+    result = _client(router).send_message(
+        agent_id="agent-1", session_id="s1", content="hi",
+        idempotency_key="banyanos-abc",
+    )
+    assert result["taskId"] == "task-row-1"
+    assert result["continuationQueued"] is False
+
+
 def _task_response():
     return {"taskStatus": {"id": "task-1", "agentId": "agent-1", "status": "RUNNING",
                             "sessionId": "s1", "outputPayload": None,

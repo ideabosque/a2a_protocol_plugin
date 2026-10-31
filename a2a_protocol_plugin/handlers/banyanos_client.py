@@ -218,7 +218,9 @@ class BanyanosClient:
         (live-verified 2026-10-28: only the agentInvokeStream subscription
         loads it), so the A2A bridge passes the history it already loaded
         for the conversation. Returns
-        ``{success, messageId, sessionId, role, content, latencyMs}``.
+        ``{success, messageId, sessionId, role, content, latencyMs,
+        continuationQueued, taskId}`` (``taskId`` is the backend task row
+        that the execution map and dedup observation query).
         """
         query = """
             mutation SendMessage($input: SendMessageInput!, $idempotencyKey: ID!) {
@@ -229,6 +231,8 @@ class BanyanosClient:
                     role
                     content
                     latencyMs
+                    continuationQueued
+                    taskId
                 }
             }
         """

@@ -32,7 +32,7 @@ from a2a.server.context import ServerCallContext
 from a2a.server.tasks import TaskStore
 
 # Import Task type and related types from A2A SDK
-from a2a.types import Task, TaskState, TaskStatus
+from a2a.types import Message, Part, Role, Task, TaskState, TaskStatus
 
 __author__ = "SilvaEngine Team"
 
@@ -355,6 +355,19 @@ class DynamoDBA2ATaskStore(TaskStore):
         else:
             # Unknown type, default to submitted state
             task_status = TaskStatus(state=_task_state("SUBMITTED"))
+
+        # message_response rows keep the agent reply only in output_data —
+        # without it tasks/get returns a COMPLETED task with no result, so an
+        # observer (orchestration suspension worker) resumes with empty output.
+        output_content = (task_dict.get("output_data") or {}).get("content")
+        if (
+            output_content
+            and not task_dict.get("artifacts")
+            and not task_status.HasField("message")
+        ):
+            task_status.message.CopyFrom(
+                Message(role=Role.ROLE_AGENT, parts=[Part(text=str(output_content))])
+            )
 
         # Otherwise, construct proper Task object
         # Map DynamoDB fields to Task fields.
