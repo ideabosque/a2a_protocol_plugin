@@ -212,11 +212,17 @@ def record_execution(
     repo = default_setting_repo()
     if repo is None or not setting_id:
         return
+    # 后端任务行 ID 优先（task_id 键，Phase 3 续跑对账引用）；fallback:
+    # invocation id（assistant 消息 id，兼容旧行为）。
+    backend_task_id = str(
+        (invocation or {}).get("task_id")
+        or (invocation or {}).get("id") or ""
+    )
     payload = {
         "backend_ref": {
             "kind": "agent_task",
-            "task_id": str((invocation or {}).get("id") or ""),
-            "invocation_id": str((invocation or {}).get("id") or ""),
+            "task_id": backend_task_id,
+            "invocation_id": backend_task_id,
             "agent_id": str((invocation or {}).get("agent_id") or ""),
         },
         "idempotency_key": (invocation or {}).get("idempotency_key", ""),

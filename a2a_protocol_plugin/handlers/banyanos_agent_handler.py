@@ -343,6 +343,17 @@ class BanyanosAgentHandler:
         message); each turn then persists USER/ASSISTANT messages on the
         Banyanos side too.
         """
+        # 观察优先（发现 #4/幂等规则）：已有非终态后端执行 → 绝不重复
+        # 投递副作用动作 —— 只观察其终态；终态则直接回放结果（A2A 任务
+        # 与幂等预留收敛）。
+        dedup_task_id = str(
+            (reservation.get("backend_ref") or {}).get("task_id") or ""
+        )
+        if reservation.get("deduplicated") and dedup_task_id:
+            return self._observe_deduplicated(
+                client, reservation, dedup_task_id,
+            )
+
         chat_history: list[dict[str, Any]] = []
         for message in (input_messages or [])[:-1]:
             role = str(message.get("role", "user")).upper()
@@ -383,6 +394,8 @@ class BanyanosAgentHandler:
             metadata["banyanos_backend_task_id"] = backend_task_id
         metadata["banyanos_invocation"] = {
             "id": message_id,
+            # 后端任务行引用优先（观察/对账层的权威后端 ID）。
+            "task_id": backend_task_id,
             "agent_id": metadata["banyanos_agent_id"],
             "status": status,
             "idempotency_key": reservation["idempotency_key"],
@@ -406,6 +419,72 @@ class BanyanosAgentHandler:
             result["error"] = ("Banyanos SendMessage failed: "
                                + str(content or "unspecified backend error"))
         return result
+
+    def _observe_deduplicated(
+        self,
+        client: BanyanosClient,
+        reservation: dict[str, Any],
+        backend_task_id: str,
+    ) -> dict[str, Any]:
+        """Observe an already-reserved backend execution (no new side effect).
+
+        幂等规则（计划 §Invocation）：同一逻辑操作的重复提交（重试/恢复）
+        通过预留行解析既有后端任务，仅查询其生命周期：
+
+        - 已终态：直接回放结果（content 取自后端任务 outputPayload），
+          执行器可安全完成任务；
+        - 仍非终态：返回 continuation 标记 —— 执行器保任务 WORKING，
+          等待 reconciliation（``banyanos_continuation_poller``）。
+        """
+        try:
+            backend = client.task_status(backend_task_id)
+        except BanyanosClientError as exc:
+            # 观察失败 ≠ 后端失败：保持非终态语义（WORKING）等待下一轮
+            # 对账，绝不降级为失败或重新投递。
+            self.logger.warning(
+                "banyanos dedup observe failed (backend=%s): %s",
+                backend_task_id, exc,
+            )
+            return {
+                "content": "",
+                "role": "agent",
+                "metadata": {
+                    "banyanos_backend_task_id": backend_task_id,
+                    "idempotency_key": reservation["idempotency_key"],
+                    "banyanos_status": "RUNNING",
+                    "banyanos_continuation": "queued",
+                },
+            }
+
+        backend_status = str(backend.get("status") or "").upper()
+        content = str((backend.get("outputPayload") or {}).get("content") or "")
+        metadata: dict[str, Any] = {
+            "banyanos_backend_task_id": backend_task_id,
+            "idempotency_key": reservation["idempotency_key"],
+            "banyanos_agent_id": (reservation.get("backend_ref") or {}).get(
+                "agent_id"
+            ) or "",
+            "banyanos_status": backend_status or "RUNNING",
+            "deduplicated": True,
+        }
+        if backend_status in ("SUCCESS", "COMPLETED"):
+            metadata["banyanos_invocation"] = {
+                "task_id": backend_task_id,
+                "status": backend_status,
+                "idempotency_key": reservation["idempotency_key"],
+            }
+            return {"content": content, "role": "agent", "metadata": metadata}
+        if backend_status in ("FAILED", "CANCELED", "CANCELLED"):
+            return {
+                "content": "",
+                "role": "agent",
+                "error": ("Banyanos dedup-observed failure: "
+                          + str(backend.get("errorMessage") or backend_status)),
+                "metadata": metadata,
+            }
+        # 非终态：保持 WORKING。
+        metadata["banyanos_continuation"] = "queued"
+        return {"content": content, "role": "agent", "metadata": metadata}
 
     # Streaming path (banyan_ws agentInvokeStream subscription)
     # ------------------------------------------------------------------
