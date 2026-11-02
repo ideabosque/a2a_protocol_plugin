@@ -204,3 +204,44 @@ def test_metadata_allowlist_excludes_credential_and_dynamic_values(logger):
     assert "banyanos_agent_id" in METADATA_ALLOWLIST
     assert "banyanos_service_ref" in METADATA_ALLOWLIST
     assert "banyanos_token" not in METADATA_ALLOWLIST
+def _deployment_metadata(**fields):
+    """Agent metadata without endpoint overrides (deployment URLs apply)."""
+    meta = _metadata(**fields)["metadata"]
+    meta.pop("banyanos_graphql_url")
+    meta.pop("banyanos_ws_url")
+    return {"metadata": meta}
+
+
+@pytest.mark.unit
+def test_gateway_user_token_wins_over_static_and_resolver(logger, monkeypatch):
+    monkeypatch.setattr("a2a_protocol_plugin.handlers.banyanos_identity.Config", _config())
+    identity = resolve_banyanos_identity(
+        _deployment_metadata(), {},
+        _context(_gateway_authorization="Bearer original-user-token"),
+        logger, token_resolver=lambda *_: "service-token",
+    )
+    assert identity.graphql_url == "http://config-gateway.test"
+    assert identity.token == "original-user-token"
+    assert "original-user-token" not in str(identity.redacted())
+
+
+@pytest.mark.unit
+def test_user_token_not_forwarded_to_agent_overridden_endpoint(logger, monkeypatch):
+    """Per-agent metadata pointing elsewhere keeps the configured credential."""
+    monkeypatch.setattr("a2a_protocol_plugin.handlers.banyanos_identity.Config", _config())
+    identity = resolve_banyanos_identity(
+        _metadata(), {},
+        _context(_gateway_authorization="Bearer original-user-token"),
+        logger, token_resolver=lambda *_: "service-token",
+    )
+    assert identity.graphql_url == "http://meta-gateway.test"
+    assert identity.token == "service-token"
+
+
+@pytest.mark.unit
+def test_invalid_gateway_authorization_never_falls_back(logger, monkeypatch):
+    monkeypatch.setattr("a2a_protocol_plugin.handlers.banyanos_identity.Config", _config())
+    with pytest.raises(BanyanosIdentityError):
+        resolve_banyanos_identity(
+            _metadata(), {}, _context(_gateway_authorization="Basic spoofed"), logger,
+        )

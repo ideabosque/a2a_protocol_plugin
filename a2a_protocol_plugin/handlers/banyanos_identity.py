@@ -139,24 +139,7 @@ def resolve_banyanos_identity(
     service_ref = _pick("banyanos_service_ref")
     credential_ref = _pick("banyanos_credential_ref")
 
-    # Credential: resolver hook (secret reference) first, then settings.
-    # Credential refs come from trusted agent metadata only and are passed to
-    # the deploy-provided resolver — never resolved from request metadata.
-    token = ""
-    if token_resolver is not None:
-        try:
-            resolved = token_resolver(service_ref, credential_ref)
-        except Exception as exc:
-            raise BanyanosIdentityError(
-                f"Banyanos credential resolution failed for service_ref "
-                f"{service_ref or '<default>'}: {exc}"
-            ) from exc
-        if isinstance(resolved, str):
-            token = resolved.strip()
-    if not token:
-        token = _pick("BANYANOS_TOKEN", "banyanos_token") or \
-            (getattr(Config, "banyanos_token", None) or "")
-
+    # Endpoints: trusted agent metadata overrides, then deployment settings.
     graphql_url = (
         _pick("banyanos_graphql_url", "BANYANOS_GRAPHQL_URL")
         or getattr(Config, "banyanos_graphql_url", None)
@@ -181,6 +164,60 @@ def resolve_banyanos_identity(
         or getattr(Config, "banyanos_endpoint_id", None)
         or "banyan"
     )
+
+    # Credential. The caller's own gateway bearer (forwarded by the A2A
+    # server; never taken from request metadata) wins — but only towards the
+    # deployment's own Banyanos endpoints. A per-agent metadata override that
+    # points elsewhere keeps the configured credential for that target, so a
+    # user's token never leaves the deployment.
+    authorization = context.get("_gateway_authorization")
+    forwarded = ""
+    if authorization is not None:
+        if not isinstance(authorization, str) or not authorization.lower().startswith("bearer "):
+            raise BanyanosIdentityError("Invalid gateway caller authorization")
+        forwarded = authorization.split(" ", 1)[1].strip()
+        if not forwarded:
+            raise BanyanosIdentityError("Missing gateway caller bearer token")
+
+    def _deployment_value(*names: str, attr: str) -> str:
+        for name in names:
+            value = setting.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return str(getattr(Config, attr, None) or "").strip()
+
+    deployment_graphql_url = _deployment_value(
+        "banyanos_graphql_url", "BANYANOS_GRAPHQL_URL", attr="banyanos_graphql_url"
+    )
+    deployment_ws_url = _deployment_value(
+        "banyanos_ws_url", "BANYANOS_WS_URL", attr="banyanos_ws_url"
+    )
+    targets_deployment = bool(graphql_url) and (
+        graphql_url == deployment_graphql_url and ws_url == deployment_ws_url
+    )
+
+    # Otherwise: resolver hook (secret reference from trusted agent metadata,
+    # never from request metadata), then settings.
+    token = ""
+    if forwarded and targets_deployment:
+        token = forwarded
+    elif forwarded:
+        _log.warning(
+            "Banyanos endpoint overridden by agent metadata; not forwarding the "
+            "caller's token (using the configured credential instead)"
+        )
+    if not token and token_resolver is not None:
+        try:
+            resolved = token_resolver(service_ref, credential_ref)
+        except Exception as exc:
+            raise BanyanosIdentityError(
+                f"Banyanos credential resolution failed for service_ref "
+                f"{service_ref or '<default>'}: {exc}"
+            ) from exc
+        if isinstance(resolved, str):
+            token = resolved.strip()
+    if not token:
+        token = _pick("BANYANOS_TOKEN", "banyanos_token") or             (getattr(Config, "banyanos_token", None) or "")
 
     if not graphql_url:
         raise BanyanosIdentityError(

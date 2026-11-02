@@ -198,6 +198,12 @@ class A2ADaemonEngine(Graphql):
             # Trusted partition wins, always — re-assert after all untrusted
             # merges above.
             context_state["partition_key"] = partition_key
+            # User-token forwarding: only gateway-supplied headers are trusted.
+            # Assign after client metadata so it cannot spoof this credential.
+            headers = params.get("headers") or {}
+            context_state["_gateway_authorization"] = next(
+                (v for k, v in headers.items() if str(k).lower() == "authorization"), None,
+            )
 
             context = ServerCallContext(state=context_state)
             method = params.get("method", "")

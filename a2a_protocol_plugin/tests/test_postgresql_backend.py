@@ -13,10 +13,8 @@ configured via PG_HOST/PG_PORT/PG_USER/PG_PASSWORD/PG_DB (or DATABASE_URL).
 from __future__ import annotations
 
 import os
-import uuid
-from typing import Any, Dict
+from typing import Any
 
-import pendulum
 import pytest
 from dotenv import load_dotenv
 
@@ -27,7 +25,7 @@ pytestmark = pytest.mark.skipif(
     reason="PG integration tests require db_backend=postgresql in tests/.env",
 )
 
-from sqlalchemy import create_engine, text  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 
 from a2a_protocol_plugin.handlers.config import Config  # noqa: E402
 from silvaengine_daemon.repositories import (  # noqa: E402
@@ -108,6 +106,18 @@ def clean_repos(db_session):
     from sqlalchemy import create_engine as _ce
     eng = _ce(_pg_url(), pool_pre_ping=True, isolation_level="AUTOCOMMIT")
     with eng.connect() as c:
+        # TRUNCATE is destructive: only run against a database that is
+        # explicitly a test database, never a live deployment's tables.
+        database = c.execute(text("SELECT current_database()")).scalar() or ""
+        if "test" not in database.lower() and os.getenv(
+            "A2A_PG_TEST_ALLOW_TRUNCATE"
+        ) != "1":
+            eng.dispose()
+            pytest.skip(
+                f"Refusing to TRUNCATE a2a tables in non-test database "
+                f"{database!r}; use a *test* database or set "
+                f"A2A_PG_TEST_ALLOW_TRUNCATE=1"
+            )
         c.execute(text("SET LOCAL statement_timeout = 10000"))
         for t in ("a2a_messages", "a2a_tasks", "a2a_agents", "a2a_settings"):
             c.execute(text(f"TRUNCATE TABLE {t} RESTART IDENTITY CASCADE"))

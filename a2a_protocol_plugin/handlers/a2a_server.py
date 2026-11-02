@@ -103,6 +103,7 @@ class A2AServerCallContextBuilder(DefaultServerCallContextBuilder):
 
         body = getattr(request, "_json", None)
         self.update_state_from_body(context.state, body)
+        context.state["_gateway_authorization"] = headers.get("authorization")
 
         return context
 
@@ -116,6 +117,7 @@ class A2AServerCallContextBuilder(DefaultServerCallContextBuilder):
             context.state["partition_key"] = partition_key
 
         self.update_state_from_body(context.state, body)
+        context.state["_gateway_authorization"] = headers.get("authorization")
         return context
 
     @staticmethod

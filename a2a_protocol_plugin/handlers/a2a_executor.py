@@ -725,6 +725,7 @@ class A2ADaemonExecutor(AgentExecutor):
                     logger=self.logger,
                     task_id=task_id,
                     context_id=context_id,
+                    forwarded_authorization=_context_state_get(request_context, "_gateway_authorization"),
                     show_reasoning=_context_state_get_any(
                         request_context, "show_reasoning", "showReasoning"
                     ),
@@ -1045,6 +1046,7 @@ class A2ADaemonExecutor(AgentExecutor):
                         on_run_id=self._on_external_run_id,
                         task_id=task_id,
                         context_id=context_id,
+                        forwarded_authorization=_context_state_get(request_context, "_gateway_authorization"),
                         show_reasoning=_context_state_get_any(
                             request_context, "show_reasoning", "showReasoning"
                         ),
@@ -1104,6 +1106,7 @@ class A2ADaemonExecutor(AgentExecutor):
                         logger=self.logger,
                         task_id=task_id,
                         context_id=context_id,
+                        forwarded_authorization=_context_state_get(request_context, "_gateway_authorization"),
                         show_reasoning=_context_state_get_any(
                             request_context, "show_reasoning", "showReasoning"
                         ),
