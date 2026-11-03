@@ -766,6 +766,7 @@ async def execute_ai_agent_non_streaming(
     context_id: str | None = None,
     show_reasoning: Any = None,
     forwarded_authorization: str | None = None,
+    message_id: str | None = None,
 ) -> BridgeResult:
     """
     Full non-streaming lifecycle: resolve agent, load handler, build messages,
@@ -813,6 +814,7 @@ async def execute_ai_agent_non_streaming(
     _apply_thread_context(context, thread_uuid, run_uuid, context_id)
     # Transient handler context only; never persisted in messages/task metadata.
     context["_gateway_authorization"] = forwarded_authorization
+    context["message_id"] = message_id
 
     # 5. Persist the user's message so conversation history includes it
     await _persist_user_message(

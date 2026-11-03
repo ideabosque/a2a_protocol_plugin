@@ -19,6 +19,21 @@ class A2ASettingRepository(EntityRepository):
     def entity_type(self) -> str:
         return "a2a_setting"
 
+    def claim(self, info, **kwargs):
+        """Conditional create-only reservation (DEF-B003, 2026-11-02)."""
+        import pendulum
+        from pynamodb.exceptions import PutError
+        model = _fn_mod.A2ASettingModel
+        now = pendulum.now("UTC")
+        row = model(**kwargs, created_at=now, updated_at=now)
+        try:
+            row.save(condition=model.partition_key.does_not_exist())
+            return True
+        except PutError as exc:
+            if exc.cause_response_code == "ConditionalCheckFailedException":
+                return False
+            raise
+
     def get(self, **keys: Any) -> Optional[Dict[str, Any]]:
         partition_key = keys.get("partition_key")
         setting_id = keys.get("setting_id")

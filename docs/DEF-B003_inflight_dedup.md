@@ -1,6 +1,8 @@
 # DEF-B003 — In-flight duplicate submission: dedup-observe only attaches after the first invocation completes
 
-**Status**: open · **Severity**: High (duplicate side effects + orphaned work in A2A tool workflows)
+**Status**: fixed and verified locally, 2026-11-02; uncommitted and not remotely deployed. **Severity**: High before correction.
+
+Current evidence: [local verification report](https://github.com/banyanos/orchestration_engine/blob/main/docs/INTEGRATION_FIX_VERIFICATION_20261102.md). Atomic public reservations precede dispatch; live concurrent submissions and terminal replay returned the same task, while a new message ID created a distinct turn. Read-only reconciliation found exactly two backend tasks for those two intended turns. Long execution and cancellation also passed. PostgreSQL was tested live; DynamoDB conditional claims were reviewed without live AWS validation. Historical observations and the earlier proposed design remain below.
 **Discovered**: 2026-11-01, live in-browser E2E on `docker-banyanos-gateway` (Phase 4 checkpoint-worker validation round).
 **Plan reference**: `banyanos/orchestration_engine/docs/a2a_integration_development_plan.md` — §"Invocation, scheduling and recovery contract" / §"Retry, security, and event rules" ("After an ambiguous timeout, reconcile existing remote work before resubmitting side-effecting tasks").
 

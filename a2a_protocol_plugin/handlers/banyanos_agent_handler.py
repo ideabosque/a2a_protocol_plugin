@@ -169,7 +169,7 @@ class BanyanosAgentHandler:
         reservation = execution_map.resolve_or_reserve_execution(
             partition_key, identity.endpoint_id, part_id,
             str(context_id or ""), identity.banyanos_agent_id,
-            user_query, self.logger,
+            user_query, self.logger, message_id=ctx.get("message_id"),
         )
 
         client = BanyanosClient(
@@ -457,7 +457,10 @@ class BanyanosAgentHandler:
             }
 
         backend_status = str(backend.get("status") or "").upper()
-        content = str((backend.get("outputPayload") or {}).get("content") or "")
+        output = backend.get("outputPayload") or {}
+        if isinstance(output, str):
+            output = json.loads(output)
+        content = str(output.get("content") or "")
         metadata: dict[str, Any] = {
             "banyanos_backend_task_id": backend_task_id,
             "idempotency_key": reservation["idempotency_key"],

@@ -15,7 +15,6 @@ This executor follows the official pattern:
 
 import logging
 import threading
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,11 +37,6 @@ try:
     from a2a.utils import new_agent_text_message
 except ImportError:
     new_agent_text_message = None
-
-from .conversation_map import (  # noqa: E402 — SDK-optional module
-    default_setting_repo as _reconcile_setting_repo,
-    store_mapping as _store_mapping,
-)
 
 __author__ = "SilvaEngine Team"
 
@@ -729,6 +723,7 @@ class A2ADaemonExecutor(AgentExecutor):
                     show_reasoning=_context_state_get_any(
                         request_context, "show_reasoning", "showReasoning"
                     ),
+                    message_id=getattr(getattr(request_context, "message", None), "message_id", None),
                 )
                 # Fix (2026-10-15): the reply's contextId is the conversation
                 # key the bridge used (explicit thread_uuid, else the A2A
@@ -808,11 +803,13 @@ class A2ADaemonExecutor(AgentExecutor):
                             (result.metadata or {}).get("banyanos_backend_task_id") or ""
                         )
                         try:
+                            from .banyanos_execution_map import _store_reconcile_record
+
                             _store_reconcile_record(
                                 partition_key,
                                 str(reply_task_id or task_id or ""),
                                 backend_task_id,
-                                str(context_id or ""),
+                                str(effective_context_id or ""),
                                 self.logger,
                             )
                         except Exception as e:
@@ -829,7 +826,7 @@ class A2ADaemonExecutor(AgentExecutor):
                                     assigned_agent_id=agent_uuid or "",
                                     status="in_progress",
                                     output_data=(
-                                        {"content": partial_note[:500]}
+                                        {"content": partial_note, "banyanos_continuation": "queued", "backend_task_id": backend_task_id}
                                         if partial_note
                                         else None
                                     ),
@@ -869,7 +866,7 @@ class A2ADaemonExecutor(AgentExecutor):
                                     "failed" if result.error else "completed"
                                 ),
                                 output_data=(
-                                    {"content": result.content[:500]}
+                                    {"content": result.content}
                                     if result.content
                                     else None
                                 ),
@@ -1085,7 +1082,7 @@ class A2ADaemonExecutor(AgentExecutor):
                                 task_type=task_type,
                                 assigned_agent_id=agent_uuid or "",
                                 status="canceled" if (result.metadata or {}).get("canceled") else "failed" if result.error else "completed",
-                                output_data={"content": result.content[:500]} if result.content else None,
+                                output_data={"content": result.content} if result.content else None,
                                 context_id=effective_context_id,
                                 updated_by="a2a_daemon",
                             )
@@ -1149,7 +1146,7 @@ class A2ADaemonExecutor(AgentExecutor):
                             task_type=task_type,
                             assigned_agent_id=agent_uuid or "",
                             status="failed" if result.error else "completed",
-                            output_data={"content": result.content[:500]} if result.content else None,
+                            output_data={"content": result.content} if result.content else None,
                             context_id=effective_context_id,
                             updated_by="a2a_daemon",
                         )

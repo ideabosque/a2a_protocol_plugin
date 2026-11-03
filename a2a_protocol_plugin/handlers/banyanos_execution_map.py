@@ -134,6 +134,7 @@ def resolve_or_reserve_execution(
     agent_id: str,
     message: str,
     logger: logging.Logger,
+    message_id: str | None = None,
 ) -> dict[str, Any]:
     """Resolve an existing nonterminal execution, or reserve a new logical one.
 
@@ -150,7 +151,7 @@ def resolve_or_reserve_execution(
     backend) each submission gets a fresh idempotency key and no dedup
     guarantee is claimed — callers must reconcile after ambiguous timeouts.
     """
-    digest = invocation_digest(partition_key, context_id or "", agent_id, message)
+    digest = invocation_digest(partition_key, context_id or "", agent_id, message_id or message)
     setting_id = f"banyanos_exec#{_safe(context_id or 'none')}#{digest}"
     idempotency_key = f"banyanos-{digest}"
 

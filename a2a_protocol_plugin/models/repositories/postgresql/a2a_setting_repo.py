@@ -33,6 +33,24 @@ class A2ASettingPGRepository(EntityRepository):
     def entity_type(self) -> str:
         return "a2a_setting"
 
+    def claim(self, info, **kwargs):
+        """Atomic create-only reservation (DEF-B003, 2026-11-02)."""
+        from sqlalchemy.dialects.postgresql import insert
+        stmt = insert(A2ASettingModel).values(
+            partition_key=kwargs["partition_key"], setting_id=kwargs["setting_id"],
+            endpoint_id=kwargs["endpoint_id"], part_id=kwargs["part_id"],
+            setting=kwargs["setting"], updated_by=kwargs["updated_by"],
+        ).on_conflict_do_nothing(index_elements=["partition_key", "setting_id"]).returning(A2ASettingModel.setting_id)
+        try:
+            created = Config.db_session.execute(stmt).scalar_one_or_none()
+            Config.db_session.commit()
+            return created is not None
+        except Exception:
+            Config.db_session.rollback()
+            raise
+        finally:
+            Config.db_session.remove()
+
     def get(self, **keys: Any) -> Optional[Dict[str, Any]]:
         partition_key = keys.get("partition_key")
         setting_id = keys.get("setting_id")

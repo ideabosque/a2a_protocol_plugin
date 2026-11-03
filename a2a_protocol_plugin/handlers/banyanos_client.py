@@ -237,7 +237,7 @@ class BanyanosClient:
             }
         """
         variables: dict[str, Any] = {
-            "input": {"agentId": agent_id, "sessionId": session_id, "content": content},
+            "input": {"agentId": agent_id, "sessionId": session_id, "content": content, "asyncExecution": True},
             "idempotencyKey": idempotency_key or self.new_idempotency_key("banyanos-msg"),
         }
         if chat_history:
@@ -302,11 +302,11 @@ class BanyanosClient:
                 taskStatus(taskId: $taskId) {
                     id
                     agentId
-                    sessionId
                     status
                     outputPayload
                     errorMessage
-                    createdAt
+                    startedAt
+                    finishedAt
                 }
             }
         """

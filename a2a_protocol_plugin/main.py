@@ -13,11 +13,26 @@ from silvaengine_daemon.serialization import (
     dumps as _dumps,
 )
 from silvaengine_daemon.async_utils import run_async as _run_async_impl
-from silvaengine_daemon.partitioning import apply_partition_defaults
+from silvaengine_daemon.partitioning import apply_partition_defaults as _daemon_partition_defaults
 from silvaengine_utility import Graphql, Invoker
 
 from .handlers.config import Config
 from .schema import Mutations, Query, type_class
+
+
+def apply_partition_defaults(params, setting=None):
+    """Compose routing defaults, then pin authenticated tenant claims."""
+    _daemon_partition_defaults(params, setting)
+    context = params.get("context") or {}
+    user = context.get("user")
+    tenant = user.get("tenant_id") if isinstance(user, dict) else context.get("tenant_id")
+    if tenant:
+        endpoint = params.get("endpoint_id") or context.get("endpoint_id")
+        if not endpoint:
+            raise ValueError("endpoint_id is required for authenticated tenant routing")
+        partition = f"{endpoint}#{tenant}"
+        params.update(part_id=str(tenant), partition_key=partition)
+        context.update(part_id=str(tenant), partition_key=partition)
 
 
 def deploy() -> List:
@@ -171,7 +186,7 @@ class A2ADaemonEngine(Graphql):
                 jsonrpc_response_from_sdk,
             )
 
-            context_state = {"partition_key": partition_key}
+            context_state: Dict[str, Any] = {"partition_key": partition_key}
             request_metadata = params.get("params", {}).get("metadata", {})
             if isinstance(request_metadata, dict):
                 context_state.update(request_metadata)
@@ -205,14 +220,23 @@ class A2ADaemonEngine(Graphql):
                 (v for k, v in headers.items() if str(k).lower() == "authorization"), None,
             )
 
+            trusted_context = params.get("context") or {}
+            trusted_user = trusted_context.get("user") or {}
+            context_state["_gateway_actor_id"] = str(
+                trusted_context.get("user_id") or
+                (trusted_user.get("sub") if isinstance(trusted_user, dict) else "") or ""
+            )
             context = ServerCallContext(state=context_state)
             method = params.get("method", "")
 
             if method == "message/send":
                 send_request = build_jsonrpc_sdk_request(SendMessageRequest, params)
-                response = _run_async_impl(
-                    request_handler.on_message_send(send_request, context)
-                )
+                if not any(getattr(part, "text", "").strip() for part in send_request.message.parts):
+                    return _dumps(jsonrpc_error_response(-32602, "A non-empty text message is required", params.get("id")))
+                from .handlers.banyanos_submission import send_once
+                response = send_once(send_request, context, request_handler, self.logger)
+                if response is None:
+                    response = _run_async_impl(request_handler.on_message_send(send_request, context))
                 result = jsonrpc_response_from_sdk(response, params.get("id"))
             elif method in ("message/stream", "message/sendStream"):
                 # SDK streaming: drives the executor's streaming path, which
@@ -236,15 +260,17 @@ class A2ADaemonEngine(Graphql):
                 }
             elif method == "tasks/get":
                 get_request = build_jsonrpc_sdk_request(GetTaskRequest, params)
-                response = _run_async_impl(
-                    request_handler.on_get_task(get_request, context)
-                )
+                from .handlers.banyanos_submission import observe
+                response = observe(get_request.id, context, self.logger)
+                if response is None:
+                    response = _run_async_impl(request_handler.on_get_task(get_request, context))
                 result = jsonrpc_response_from_sdk(response, params.get("id"))
             elif method == "tasks/cancel":
                 cancel_request = build_jsonrpc_sdk_request(CancelTaskRequest, params)
-                response = _run_async_impl(
-                    request_handler.on_cancel_task(cancel_request, context)
-                )
+                from .handlers.banyanos_submission import observe
+                response = observe(cancel_request.id, context, self.logger, cancel=True)
+                if response is None:
+                    response = _run_async_impl(request_handler.on_cancel_task(cancel_request, context))
                 result = jsonrpc_response_from_sdk(response, params.get("id"))
             elif method == "tasks/list":
                 list_request = build_jsonrpc_sdk_request(ListTasksRequest, params)

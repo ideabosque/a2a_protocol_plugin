@@ -310,6 +310,7 @@ async def get_a2a_task(partition_key: str, task_id: str) -> dict[str, Any]:
             a2aTask(taskId: $taskId) {
                 partitionKey
                 taskId
+                contextId
                 taskType
                 assignedAgentId
                 status
@@ -367,6 +368,7 @@ async def get_a2a_task(partition_key: str, task_id: str) -> dict[str, Any]:
 
     return {
         "id": task.get("taskId"),
+        "context_id": task.get("contextId"),
         "status": task.get("status"),
         "task_type": task.get("taskType"),
         "assigned_agent_id": task.get("assignedAgentId"),

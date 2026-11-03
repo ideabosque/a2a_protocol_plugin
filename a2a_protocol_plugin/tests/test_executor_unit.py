@@ -413,12 +413,15 @@ class TestMessageResponseErrorPropagation:
 
         context = self._context_with_task_id("sdk-task-2")
         with patch(
+            "a2a_protocol_plugin.handlers.banyanos_execution_map._store_reconcile_record",
+            return_value=True,
+        ) as reconcile, patch(
             "a2a_protocol_plugin.handlers.a2a_ai_agent_utility"
             ".execute_ai_agent_non_streaming",
             new=AsyncMock(
                 return_value=BridgeResult(
                     content="partial", role="agent",
-                    metadata={"banyanos_continuation": "queued"},
+                    metadata={"banyanos_continuation": "queued", "banyanos_backend_task_id": "backend-1"},
                 )
             ),
         ):
@@ -430,6 +433,8 @@ class TestMessageResponseErrorPropagation:
         written = [call.kwargs.get("status") for call in persist.await_args_list]
         assert written, "continuation row write expected"
         assert all(w == "in_progress" for w in written)
+        reconcile.assert_called_once()
+        assert reconcile.call_args.args[1:3] == ("sdk-task-2", "backend-1")
 
 
 if __name__ == "__main__":
