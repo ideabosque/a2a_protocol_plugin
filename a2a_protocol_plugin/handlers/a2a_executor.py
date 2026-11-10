@@ -1098,10 +1098,25 @@ class A2ADaemonExecutor(AgentExecutor):
                         or (result.metadata or {}).get("thread_uuid")
                     )
                     if result.error:
+                        # A failed run must be structurally failed: a
+                        # completed Message carrying the error text looks
+                        # like a success to every client that decodes the A2A
+                        # lifecycle (the same fix the message_response path
+                        # got with DEF-B001). The event carries the SDK's
+                        # task id, so the SDK matches it to the task.
+                        failed_task_id = (
+                            _context_get_any(
+                                request_context, "task_id", "taskId", default=""
+                            )
+                            or task_id
+                        )
                         await _emit_event(
                             event_queue,
-                            _agent_text_message(
-                                f"AI agent error: {result.error}", effective_context_id
+                            _agent_error_task_event(
+                                failed_task_id,
+                                effective_context_id,
+                                "FAILED",
+                                error_text=f"AI agent error: {result.error}",
                             ),
                         )
                     elif result.output_files:
@@ -1160,10 +1175,22 @@ class A2ADaemonExecutor(AgentExecutor):
                 )
 
                 if result.error:
+                    # Structurally failed run — see the streaming branch
+                    # above and DEF-B001. The event carries the SDK's task
+                    # id, so the SDK matches it to the task.
+                    failed_task_id = (
+                        _context_get_any(
+                            request_context, "task_id", "taskId", default=""
+                        )
+                        or task_id
+                    )
                     await _emit_event(
                         event_queue,
-                        _agent_text_message(
-                            f"AI agent error: {result.error}", effective_context_id
+                        _agent_error_task_event(
+                            failed_task_id,
+                            effective_context_id,
+                            "FAILED",
+                            error_text=f"AI agent error: {result.error}",
                         ),
                     )
                 else:
