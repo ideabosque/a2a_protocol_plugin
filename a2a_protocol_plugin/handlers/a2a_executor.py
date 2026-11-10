@@ -548,6 +548,11 @@ class A2ADaemonExecutor(AgentExecutor):
         # the active external run so cancel/approval can be routed correctly.
         self._active_external_runs: dict[str, ActiveExternalRun] = {}
         self._external_runs_lock = threading.Lock()
+        # Cancellations that arrived before the run registered: the run id
+        # is only published once the backend accepted the prompt, so a
+        # cancellation can race the start-up. The intent is kept here and
+        # applied when the run registers.
+        self._pending_run_cancels: set[str] = set()
 
     async def execute(
         self, request_context: RequestContext, event_queue: EventQueue
@@ -1374,7 +1379,13 @@ class A2ADaemonExecutor(AgentExecutor):
         handler: Any,
         stream_event: threading.Event,
     ) -> None:
-        """Bridge callback: register a freshly-drained external run_id."""
+        """Bridge callback: register a freshly-drained external run_id.
+
+        A cancellation can arrive while the backend run is still starting
+        up - the run id is only published once the backend accepted the
+        prompt. Such a cancellation is remembered, and the run is stopped
+        as soon as it registers, instead of being lost.
+        """
         if not task_id or not run_id:
             return
         entry = ActiveExternalRun(
@@ -1384,19 +1395,56 @@ class A2ADaemonExecutor(AgentExecutor):
             stream_event=stream_event,
         )
         with self._external_runs_lock:
-            self._active_external_runs[task_id] = entry
+            cancel_requested = task_id in self._pending_run_cancels
+            if cancel_requested:
+                self._pending_run_cancels.discard(task_id)
+            else:
+                self._active_external_runs[task_id] = entry
+        if cancel_requested:
+            self.logger.info(
+                f"Task {task_id} was cancelled before its run registered - "
+                f"stopping run {run_id} now"
+            )
+            threading.Thread(
+                target=self._stop_registered_run,
+                args=(entry,),
+                daemon=True,
+            ).start()
+            return
         self.logger.info(
             f"Registered external run {run_id} for task {task_id}"
         )
+
+    def _stop_registered_run(self, entry: "ActiveExternalRun") -> None:
+        """Stop a run that registered after its cancellation was requested."""
+        if entry.stream_event is not None:
+            entry.stream_event.cancelled = True
+        try:
+            if hasattr(entry.handler, "cancel_run"):
+                entry.handler.cancel_run(entry.run_id)
+        except Exception as e:  # pragma: no cover - defensive
+            self.logger.warning(
+                "Failed to stop a late-registering run %s: %s",
+                entry.run_id,
+                e,
+            )
 
     def _unregister_external_run(self, task_id: str) -> None:
         with self._external_runs_lock:
             self._active_external_runs.pop(task_id, None)
 
     async def _cancel_external_run(self, task_id: str) -> bool:
-        """Cancel an external run via the handler's cancel_run() if present."""
+        """Cancel an external run via the handler's cancel_run() if present.
+
+        When the run has not registered yet (the cancellation arrived while
+        the backend was still starting), the request is remembered and
+        applied as soon as the run registers - otherwise the stop would be
+        lost and the backend would keep running.
+        """
         with self._external_runs_lock:
             run = self._active_external_runs.get(task_id)
+            if not run:
+                self._pending_run_cancels.add(task_id)
         if not run or not hasattr(run.handler, "cancel_run"):
             return False
 

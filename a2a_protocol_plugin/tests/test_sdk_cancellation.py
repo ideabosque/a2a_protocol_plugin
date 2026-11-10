@@ -330,6 +330,32 @@ async def test_failing_backend_stop_still_cancels_the_task(harness):
     send.cancel()
 
 
+@pytest.mark.asyncio
+async def test_cancel_before_the_run_registers_stops_the_run(harness):
+    """A cancellation that races the run start-up must not be lost.
+
+    The run id is only published once the backend accepted the prompt, so a
+    cancellation can arrive while the run is still starting. The intent is
+    remembered and applied as soon as the run registers.
+    """
+    send = await harness.start_message()
+    await harness.wait_until_running()
+    task_id = harness.task_id_of()
+
+    # The cancel arrives first: there is no registered run yet.
+    assert await harness.executor._cancel_external_run(task_id) is False
+    assert harness.backend.stop_calls == []
+
+    # The run registers afterwards and must be stopped right away.
+    harness.register_external_run(task_id)
+    for _ in range(50):
+        if harness.backend.stop_calls:
+            break
+        await asyncio.sleep(0.1)
+    assert harness.backend.stop_calls == [RUN_ID], harness.backend.stop_calls
+    send.cancel()
+
+
 def test_executor_cancel_has_the_sdk_signature():
     """The executor must implement the SDK's two-argument cancel contract."""
     signature = inspect.signature(A2ADaemonExecutor.cancel)
