@@ -318,7 +318,7 @@ class A2AGRPCServicer:
         task_id = request.get("id")
 
         try:
-            await self.agent_executor.cancel(task_id)
+            await self.agent_executor.cancel_task_by_id(task_id)
 
             return {
                 "task_id": task_id,

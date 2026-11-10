@@ -119,10 +119,11 @@ class TestA2ADaemonExecutor:
         executor.task_store.save = AsyncMock()
 
         # Should not raise error
-        await executor.cancel("non-existent-task-id")
+        assert await executor.cancel_task_by_id("non-existent-task-id") is False
 
         # Should try to get but not save
         executor.task_store.get.assert_called_once()
+        executor.task_store.save.assert_not_called()
         # Note: The actual code saves even when not found, test reflects actual behavior
 
     @pytest.mark.asyncio
@@ -137,10 +138,10 @@ class TestA2ADaemonExecutor:
         executor.task_store.save = AsyncMock()
 
         # Cancel should handle terminal state appropriately
-        await executor.cancel("task-id")
+        assert await executor.cancel_task_by_id("task-id") is False
 
-        # The actual implementation may or may not save based on state detection
-        # Just verify no exception is raised
+        # A task that already reached a terminal state is not re-saved
+        executor.task_store.save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_cancel_valid_task(self, executor):
@@ -155,7 +156,7 @@ class TestA2ADaemonExecutor:
         executor.task_store.save = AsyncMock()
 
         # Cancel the task
-        await executor.cancel("test-task-id")
+        assert await executor.cancel_task_by_id("test-task-id") is True
 
         # Should save the task with updated status
         executor.task_store.save.assert_called_once()
@@ -206,10 +207,10 @@ class TestExecutorIntegration:
         executor.task_store = task_store
 
         # Cancel the task
-        await executor.cancel("test-task")
+        assert await executor.cancel_task_by_id("test-task") is True
 
         # Verify task was fetched and saved
-        task_store.get.assert_called_once_with("test-task")
+        task_store.get.assert_called_once_with("test-task", None)
         task_store.save.assert_called_once()
 
 

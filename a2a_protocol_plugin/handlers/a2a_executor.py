@@ -68,7 +68,44 @@ def _status_update_event(state: TaskState, **kwargs: Any) -> TaskStatusUpdateEve
     try:
         return TaskStatusUpdateEvent(state=state, **kwargs)
     except ValueError:
-        return TaskStatusUpdateEvent(status=TaskStatus(state=state))
+        # The protobuf TaskStatusUpdateEvent carries the state inside
+        # ``status``; the extra fields (task_id / context_id) are the same
+        # in both shapes.
+        return TaskStatusUpdateEvent(status=TaskStatus(state=state), **kwargs)
+
+
+def _mark_task_cancelled(task: Any) -> None:
+    """Mark a task cancelled across the task shapes the SDK can hand back.
+
+    The plugin's own task store returns a plain dict, while the SDK's
+    in-memory store returns a protobuf ``Task`` — a protobuf message field
+    cannot be assigned (``AttributeError: Assignment not allowed to message
+    field``), it has to be copied in.
+    """
+    if isinstance(task, dict):
+        task["status"] = _task_state_storage_name("CANCELED")
+        return
+    status = getattr(task, "status", None)
+    cancelled = TaskStatus(state=_task_state("CANCELED"))
+    if hasattr(status, "CopyFrom"):
+        status.CopyFrom(cancelled)
+    else:
+        task.status = cancelled
+
+
+def _current_task_state(task: Any) -> Any:
+    """The task's current state, normalized across the task shapes.
+
+    The plugin's own task store returns a dict whose ``status`` is the
+    stored string; the SDK's in-memory store returns a protobuf ``Task``
+    whose ``status`` is a ``TaskStatus`` message carrying the state.
+    """
+    if isinstance(task, dict):
+        return task.get("status")
+    status = getattr(task, "status", None)
+    if isinstance(status, str):
+        return status
+    return getattr(status, "state", status)
 
 
 def _agent_text_message(text: str, context_id: str | None = None) -> Any:
@@ -1395,36 +1432,115 @@ class A2ADaemonExecutor(AgentExecutor):
         )
         return bool(resolved)
 
-    async def cancel(self, task_id: str) -> None:
-        """
-        Cancel running task.
+    async def cancel(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Cancel a task through the A2A SDK's cancellation contract.
 
-        Uses the task store to retrieve and update task status to cancelled.
-        The task store handles partition_key resolution internally.
+        The SDK (``a2a-sdk >= 1.0.2``) calls
+        ``AgentExecutor.cancel(request_context, event_queue)`` from
+        ``ActiveTask.cancel()``. The previous one-argument
+        ``cancel(task_id)`` signature raised a ``TypeError`` on that path;
+        the SDK caught it and carried on, so the backend run was never asked
+        to stop: the client saw a cancellation that never happened (the
+        backend finished its work and the late completion overwrote the
+        cancelled state).
+
+        The task id and the partition are read from the TRUSTED call
+        context — the SDK's own ids for this request — never from
+        caller-supplied payload values. The call context is handed to the
+        task store so the read and the write resolve the caller's tenant
+        partition instead of the store's default one.
 
         Args:
-            task_id: Task identifier to cancel
+            context: The SDK's request context for this cancellation.
+            event_queue: The SDK's event queue for this request.
         """
-        self.logger.info(f"Cancelling task: {task_id}")
+        task_id = str(
+            _context_get_any(context, "task_id", "taskId", default="") or ""
+        ).strip()
+        if not task_id:
+            self.logger.warning(
+                "Cancel request without a task id - nothing to cancel"
+            )
+            return
 
+        call_context = getattr(context, "call_context", None)
+        partition_key = str(
+            _context_get_any(context, "partition_key", default="") or ""
+        ).strip()
+        self.logger.info(
+            f"Cancelling task: {task_id} "
+            f"(partition: {partition_key or 'default'})"
+        )
+
+        cancelled = await self.cancel_task_by_id(
+            task_id,
+            context=call_context,
+            partition_key=partition_key,
+        )
+        if cancelled and event_queue is not None:
+            # The SDK persists the cancellation through this event, so it
+            # must carry the task identity (the SDK's TaskManager matches
+            # the event to the task by task_id).
+            context_id = str(
+                _context_get_any(context, "context_id", "contextId", default="")
+                or ""
+            ).strip()
+            await _emit_event(
+                event_queue,
+                _status_update_event(
+                    _task_state("CANCELED"),
+                    task_id=task_id,
+                    context_id=context_id or None,
+                ),
+            )
+
+    async def cancel_task_by_id(
+        self,
+        task_id: str,
+        *,
+        context: Any = None,
+        partition_key: str = "",
+    ) -> bool:
+        """Cancel a task by id: stop the backend run, then persist the state.
+
+        This is the task-id entry point used by the internal callers (the
+        cancellation propagator and the gRPC CancelTask handler) and by
+        :meth:`cancel` for the SDK path.
+
+        Args:
+            task_id: The task to cancel.
+            context: The SDK call context. Its ``state["partition_key"]``
+                selects the tenant partition for the store read and write;
+                without it the store falls back to its default partition.
+            partition_key: The partition key (for logging only).
+
+        Returns:
+            True when the task was moved to the cancelled state.
+        """
         try:
-            # Phase 4: cancel the external (Hermes) run first so the SSE
-            # stream unblocks and the task-store cancellation can persist.
-            await self._cancel_external_run(task_id)
-
             if not self.task_store:
                 raise ValueError(
                     "Task store not available - cannot cancel task. "
                     "Ensure executor is initialized with task_store parameter."
                 )
 
-            # Retrieve task from store using canonical interface
-            task = await self.task_store.get(task_id)
+            # Retrieve task from store using canonical interface. The call
+            # context carries the caller's partition, so the read and the
+            # write below resolve the same tenant partition.
+            #
+            # The read comes FIRST: it is the ownership gate. A task that
+            # the caller's partition does not own must not reach the
+            # backend - authorization happens before touching execution.
+            task = await self.task_store.get(task_id, context)
             if not task:
                 self.logger.warning(
                     f"Task {task_id} not found - may already be deleted"
                 )
-                return
+                return False
 
             # Update task status to canceled using canonical A2A TaskState enum
             terminal_states = {
@@ -1433,9 +1549,7 @@ class A2ADaemonExecutor(AgentExecutor):
                 _task_state("FAILED"),
                 _task_state("REJECTED"),
             }
-            current_state = (
-                task.get("status") if isinstance(task, dict) else task.status
-            )
+            current_state = _current_task_state(task)
             if isinstance(current_state, str):
                 current_state = (
                     self.task_store._map_status_to_taskstate(current_state)
@@ -1447,17 +1561,27 @@ class A2ADaemonExecutor(AgentExecutor):
                 self.logger.warning(
                     f"Task {task_id} is already in terminal state {current_state}, cannot cancel"
                 )
-                return
+                return False
 
-            if isinstance(task, dict):
-                task["status"] = _task_state_storage_name("CANCELED")
-            else:
-                task.status = TaskStatus(state=_task_state("CANCELED"))
+            # Stop the backend run so the SSE stream unblocks and the
+            # task-store cancellation can persist. A failing backend stop
+            # must not prevent the terminal state: the cancellation is
+            # requested, and whether the remote run actually stopped is
+            # reported separately (never silently claimed as confirmed).
+            try:
+                await self._cancel_external_run(task_id)
+            except Exception as stop_error:
+                self.logger.warning(
+                    f"Backend stop for task {task_id} failed: {stop_error}"
+                )
+
+            _mark_task_cancelled(task)
 
             # Save updated task
-            await self.task_store.save(task)
+            await self.task_store.save(task, context)
 
             self.logger.info(f"Task {task_id} cancelled successfully")
+            return True
 
         except Exception as e:
             self.logger.error(f"Failed to cancel task {task_id}: {e}")

@@ -97,7 +97,7 @@ class CancellationPropagator:
 
         try:
             # Cancel root task
-            await self.agent_executor.cancel(task_id)
+            await self.agent_executor.cancel_task_by_id(task_id)
             result.cancelled = True
             self.logger.info(f"Cancelled root task {task_id}")
 
@@ -107,7 +107,7 @@ class CancellationPropagator:
             # Cancel each child
             for child_ref in children:
                 try:
-                    await self.agent_executor.cancel(child_ref.task_id)
+                    await self.agent_executor.cancel_task_by_id(child_ref.task_id)
                     result.children_cancelled += 1
                     self.logger.debug(f"Cancelled child task {child_ref.task_id}")
 
