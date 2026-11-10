@@ -220,6 +220,23 @@ class Config:
     pi_stream_timeout: float = 300.0
     pi_approval_timeout: float = 120.0
 
+    # Phase OMP (omp bridge): omp sidecar (HTTP + SSE wrapping
+    # ``omp --mode rpc``) — the sibling of the pi bridge above. The omp
+    # sidecar speaks the same HTTP + SSE surface; only the keys differ.
+    omp_api_url: str | None = None
+    omp_secret_key: str | None = None
+    omp_cwd: str = "/workspace"
+    omp_model: str = ""
+    omp_thinking: str = ""
+    omp_permission_mode: str = "auto_allow"
+    omp_busy_behavior: str = "followUp"
+    omp_stream_timeout: float = 300.0
+    omp_approval_timeout: float = 120.0
+    # Comma-separated label lists matching omp's approval options
+    # ("Approve" / "Approve <tool> for this session" / "Deny").
+    omp_approval_allow_labels: str = ""
+    omp_approval_deny_labels: str = ""
+
     # Phase 10: Core Engine (ai_agent_core_engine) gateway bridge settings
     core_engine_graphql_url: str | None = None
     core_engine_ws_url: str | None = None
@@ -418,6 +435,60 @@ class Config:
             setting.get("PI_APPROVAL_TIMEOUT",
                         setting.get("pi_approval_timeout",
                                     os.environ.get("PI_APPROVAL_TIMEOUT", 120.0)))
+        )
+
+        # omp sidecar bridge settings (the omp sibling of the pi bridge).
+        # Same os.environ fallback as the PI_* block above.
+        cls.omp_api_url = (
+            setting.get("OMP_API_URL") or setting.get("omp_api_url")
+            or os.environ.get("OMP_API_URL")
+        )
+        cls.omp_secret_key = (
+            setting.get("OMP_SECRET_KEY") or setting.get("omp_secret_key")
+            or os.environ.get("OMP_SECRET_KEY")
+        )
+        cls.omp_cwd = (
+            setting.get("OMP_CWD") or setting.get("omp_cwd")
+            or os.environ.get("OMP_CWD") or "/workspace"
+        )
+        cls.omp_model = (
+            setting.get("OMP_MODEL") or setting.get("omp_model")
+            or os.environ.get("OMP_MODEL") or ""
+        )
+        cls.omp_thinking = (
+            setting.get("OMP_THINKING") or setting.get("omp_thinking")
+            or os.environ.get("OMP_THINKING") or ""
+        )
+        cls.omp_permission_mode = (
+            setting.get("OMP_PERMISSION_MODE")
+            or setting.get("omp_permission_mode")
+            or os.environ.get("OMP_PERMISSION_MODE")
+            or "auto_allow"
+        )
+        cls.omp_busy_behavior = (
+            setting.get("OMP_BUSY_BEHAVIOR")
+            or setting.get("omp_busy_behavior")
+            or os.environ.get("OMP_BUSY_BEHAVIOR")
+            or "followUp"
+        )
+        cls.omp_stream_timeout = float(
+            setting.get("OMP_STREAM_TIMEOUT", setting.get("omp_stream_timeout",
+                         os.environ.get("OMP_STREAM_TIMEOUT", 300.0)))
+        )
+        cls.omp_approval_timeout = float(
+            setting.get("OMP_APPROVAL_TIMEOUT",
+                        setting.get("omp_approval_timeout",
+                                    os.environ.get("OMP_APPROVAL_TIMEOUT", 120.0)))
+        )
+        cls.omp_approval_allow_labels = (
+            setting.get("OMP_APPROVAL_ALLOW_LABELS")
+            or setting.get("omp_approval_allow_labels")
+            or os.environ.get("OMP_APPROVAL_ALLOW_LABELS") or ""
+        )
+        cls.omp_approval_deny_labels = (
+            setting.get("OMP_APPROVAL_DENY_LABELS")
+            or setting.get("omp_approval_deny_labels")
+            or os.environ.get("OMP_APPROVAL_DENY_LABELS") or ""
         )
 
         # Core Engine (ai_agent_core_engine) gateway bridge settings

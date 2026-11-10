@@ -41,7 +41,7 @@ Wire details:
 Only pi EVENT forwarding (``message_update`` deltas, tool execution events,
 ``extension_ui_request`` dialogs, ``agent_settled``) and run bookkeeping
 happen here; meaning conversion to A2A stream chunks lives in
-``pi_handler.py``.
+``sidecar_handler.py`` (the shared bridge of the pi and omp dialects).
 
 ``http_transport`` accepts an ``httpx.BaseTransport`` (typically
 ``httpx.MockTransport`` in tests), injected into the synchronous clients; pass
@@ -104,6 +104,7 @@ class PiSidecarClient:
         request_timeout: float = 120.0,
         http_transport: Any = None,
         client_factory: Callable[[Any], httpx.Client] | None = None,
+        label: str = "pi",
     ) -> None:
         self.logger = logger
         self.base_url = base_url.rstrip("/")
@@ -111,6 +112,11 @@ class PiSidecarClient:
         self.request_timeout = float(request_timeout)
         self._http_transport = http_transport
         self._client_factory = client_factory
+        # Agent label of the dialect this client talks to ("pi", "omp") —
+        # it words the transport errors and derives the env prefix of the
+        # sidecar secret variables.
+        self.label = label
+        self.env_prefix = label.upper()
         # Shared client (pool) — the SSE pump and helper POSTs (ui-response,
         # abort) can safely overlap on separate pooled connections.
         self._client: httpx.Client | None = None
@@ -141,9 +147,10 @@ class PiSidecarClient:
     def _check_status(self, resp: httpx.Response, action: str) -> None:
         if resp.status_code in (401, 403):
             raise PiSidecarError(
-                f"pi sidecar {action} rejected the A2A gateway credentials "
-                f"(HTTP {resp.status_code}); verify PI_SIDECAR_SECRET_KEY "
-                "and PI_SECRET_KEY",
+                f"{self.label} sidecar {action} rejected the A2A gateway "
+                f"credentials (HTTP {resp.status_code}); verify "
+                f"{self.env_prefix}_SIDECAR_SECRET_KEY and "
+                f"{self.env_prefix}_SECRET_KEY",
                 status_code=resp.status_code,
             )
         # DEF-PI-005 fix (2026-10-25): only successful HTTP responses
@@ -156,7 +163,8 @@ class PiSidecarClient:
             except ValueError:
                 detail = resp.text[:200]
             raise PiSidecarError(
-                f"pi sidecar {action} failed with HTTP {resp.status_code}"
+                f"{self.label} sidecar {action} failed with HTTP "
+                f"{resp.status_code}"
                 + (f": {detail}" if detail else ""),
                 status_code=resp.status_code,
             )
@@ -177,7 +185,9 @@ class PiSidecarClient:
                 timeout=timeout if timeout is not None else self.request_timeout,
             )
         except httpx.HTTPError as e:
-            raise PiSidecarError(f"pi sidecar transport error: {e}") from e
+            raise PiSidecarError(
+                f"{self.label} sidecar transport error: {e}"
+            ) from e
         self._check_status(resp, action)
         return resp
 
@@ -190,7 +200,9 @@ class PiSidecarClient:
                 timeout=self.request_timeout,
             )
         except httpx.HTTPError as e:
-            raise PiSidecarError(f"pi sidecar transport error: {e}") from e
+            raise PiSidecarError(
+                f"{self.label} sidecar transport error: {e}"
+            ) from e
         self._check_status(resp, action)
         return resp
 
@@ -215,7 +227,9 @@ class PiSidecarClient:
                 timeout=self.request_timeout,
             )
         except httpx.HTTPError as e:
-            raise PiSidecarError(f"pi sidecar transport error: {e}") from e
+            raise PiSidecarError(
+                f"{self.label} sidecar transport error: {e}"
+            ) from e
         self._check_status(resp, "health check")
         return self._json_or_none(resp) or {}
 
@@ -242,7 +256,8 @@ class PiSidecarClient:
         data = self._json_or_none(resp) or {}
         if not data.get("sessionId"):
             raise PiSidecarError(
-                f"pi sidecar create_session returned no sessionId: {data!r}"
+                f"{self.label} sidecar create_session returned no sessionId: "
+                f"{data!r}"
             )
         return data
 
@@ -260,7 +275,9 @@ class PiSidecarClient:
                 timeout=min(30.0, self.request_timeout),
             )
         except httpx.HTTPError as e:
-            raise PiSidecarError(f"pi sidecar transport error: {e}") from e
+            raise PiSidecarError(
+                f"{self.label} sidecar transport error: {e}"
+            ) from e
         self._check_status(resp, "get_session")
         return self._json_or_none(resp) or {}
 
@@ -362,7 +379,10 @@ class PiSidecarClient:
                         ack = {}
                     if (not isinstance(ack, dict)
                             or ack.get("disposition") not in ("steer", "followUp", "queued")):
-                        raise PiSidecarError("pi sidecar returned an invalid prompt acknowledgement")
+                        raise PiSidecarError(
+                            f"{self.label} sidecar returned an invalid prompt "
+                            "acknowledgement"
+                        )
                     run_end = {
                         "type": _RUN_END_TYPE,
                         "sessionId": session_id,
@@ -375,7 +395,8 @@ class PiSidecarClient:
                     if total_deadline is not None and time.monotonic() > total_deadline:
                         self._abort_quietly(session_id)
                         raise PiSidecarError(
-                            f"pi sidecar prompt timed out after {timeout:.0f}s"
+                            f"{self.label} sidecar prompt timed out after "
+                            f"{timeout:.0f}s"
                         )
                     if not line or line.startswith(":"):
                         continue
@@ -399,23 +420,26 @@ class PiSidecarClient:
                             on_event(event)
                         except Exception as e:  # callback decides; never kill the pump
                             self.logger.warning(
-                                "pi sidecar event callback failed: %s", e
+                                "%s sidecar event callback failed: %s",
+                                self.label, e,
                             )
         except httpx.HTTPError as e:
-            raise PiSidecarError(f"pi sidecar transport error: {e}") from e
+            raise PiSidecarError(
+                f"{self.label} sidecar transport error: {e}"
+            ) from e
 
         if not run_end:
             # Stream ended without a run_end frame — transport dropped or the
             # sidecar crashed; callers treat this like a partial run.
             self.logger.warning(
-                "pi sidecar prompt stream ended without a run_end frame "
+                "%s sidecar prompt stream ended without a run_end frame "
                 "(session=%s, %d events observed)",
-                session_id, len(events),
+                self.label, session_id, len(events),
             )
             run_end = {
                 "type": _RUN_END_TYPE,
                 "aborted": False,
-                "error": "pi sidecar stream ended without run_end",
+                "error": f"{self.label} sidecar stream ended without run_end",
             }
         return run_end, events
 
@@ -423,7 +447,9 @@ class PiSidecarClient:
         try:
             self.abort(session_id)
         except Exception as e:  # best effort during timeout handling
-            self.logger.warning("pi sidecar abort during timeout failed: %s", e)
+            self.logger.warning(
+                "%s sidecar abort during timeout failed: %s", self.label, e
+            )
 
     # ------------------------------------------------------------------
     # Teardown
