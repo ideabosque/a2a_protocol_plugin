@@ -76,6 +76,10 @@ AGENT_TYPE_MAP: dict[str, dict[str, str]] = {
         "module_name": "a2a_protocol_plugin.handlers.pi_handler",
         "class_name": "PiAgentHandler",
     },
+    "omp": {
+        "module_name": "a2a_protocol_plugin.handlers.omp_handler",
+        "class_name": "OmpAgentHandler",
+    },
     "banyanos_agent": {
         "module_name": "a2a_protocol_plugin.handlers.banyanos_agent_handler",
         "class_name": "BanyanosAgentHandler",

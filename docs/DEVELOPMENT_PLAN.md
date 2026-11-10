@@ -151,6 +151,15 @@ a2a_protocol_plugin/
   namespace, session-file resume); design and the P1 spike transcript are in
   the [Pi Integration Development Plan](PI_INTEGRATION_PLAN.md); the deployment
   is the `pi` compose profile and `tests/pi/*` scripts in `docker-a2a-gateway`.
+- omp IS the seventh bridge handler: `handlers/omp_handler.py` — the omp
+  dialect of the shared sidecar bridge (`handlers/sidecar_handler.py`, the
+  base of the pi handler too), selected with
+  `agent_type: "omp"`. It reuses the pi transport and the pi sidecar's HTTP +
+  SSE surface; the sidecar itself grew an omp dialect that drives
+  `omp --mode rpc`. Design, the O1 spike transcript and the status are in the
+  [omp Integration Development Plan](OMP_INTEGRATION_PLAN.md); the deployment
+  is the `omp` compose profile and `tests/omp/*` scripts in
+  `docker-a2a-gateway`.
 
 ## Acceptance Criteria
 

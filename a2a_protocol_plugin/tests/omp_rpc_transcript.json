@@ -1,0 +1,464 @@
+{
+  "captured": "omp 18.18.2 RPC transcript (standalone release binary), driven over `omp --mode rpc` stdio; provider was a local OpenAI-compatible mock (models.yml provider `compat`).",
+  "note": "Sanitized reference frames for the omp handler tests. Re-capture when the pinned omp version changes.",
+  "frames": {
+    "ready": {
+      "type": "ready",
+      "protocolVersion": 1,
+      "supportedProtocolVersions": [
+        1,
+        2
+      ],
+      "maxFrameBytes": 1048576,
+      "maxReassembledFrameBytes": 67108864,
+      "supportsBashExcludeFromContext": true
+    },
+    "negotiate_protocol_response": {
+      "id": "protocol-2",
+      "type": "response",
+      "command": "negotiate_protocol",
+      "success": true,
+      "data": {
+        "protocolVersion": 2
+      }
+    },
+    "message_update_text_delta": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "spike-ok",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "spike-ok"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "compat",
+          "model": "spike-model",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1794342356773,
+          "responseId": "chatcmpl-spike"
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "spike-ok"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "compat",
+        "model": "spike-model",
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 0,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1794342356773,
+        "responseId": "chatcmpl-spike"
+      },
+      "messageId": "msg-2"
+    },
+    "message_update_thinking_delta": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "thinking_delta",
+        "contentIndex": 0,
+        "delta": "spike-reasoning: ",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "spike-reasoning: thinking about it",
+              "thinkingSignature": "reasoning_content",
+              "summary": false
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "compat",
+          "model": "spike-model",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1794342362961,
+          "responseId": "chatcmpl-spike"
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "spike-reasoning: thinking about it",
+            "thinkingSignature": "reasoning_content",
+            "summary": false
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "compat",
+        "model": "spike-model",
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 0,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1794342362961,
+        "responseId": "chatcmpl-spike"
+      },
+      "messageId": "msg-2"
+    },
+    "tool_execution_start": {
+      "type": "tool_execution_start",
+      "toolCallId": "call_spike_1",
+      "toolName": "bash",
+      "args": {
+        "command": "echo spike-tool"
+      }
+    },
+    "tool_execution_update": {
+      "type": "tool_execution_update",
+      "toolCallId": "call_spike_1",
+      "toolName": "bash",
+      "args": {
+        "command": "echo spike-tool"
+      },
+      "partialResult": {
+        "content": [
+          {
+            "type": "text",
+            "text": "spike-tool\n"
+          }
+        ],
+        "details": {}
+      }
+    },
+    "tool_execution_end": {
+      "type": "tool_execution_end",
+      "toolCallId": "call_spike_1",
+      "toolName": "bash",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "spike-tool\n"
+          }
+        ],
+        "details": {
+          "wallTimeNoticeEmitted": false,
+          "timeoutSeconds": 300,
+          "wallTimeMs": 35.74752999999998,
+          "trace": {
+            "v": 1,
+            "seq": 7,
+            "status": 0,
+            "rootVpid": 1073741824,
+            "t_ns": 85268,
+            "script": "echo spike-tool",
+            "units": [
+              {
+                "at": 0,
+                "line": 1,
+                "bytes": 15,
+                "nodes": [
+                  {
+                    "k": "and_or",
+                    "lo": 0,
+                    "hi": 15,
+                    "state": "ok"
+                  },
+                  {
+                    "k": "pipeline",
+                    "lo": 0,
+                    "hi": 15,
+                    "p": 0,
+                    "state": "ok"
+                  },
+                  {
+                    "k": "simple",
+                    "lo": 0,
+                    "hi": 15,
+                    "p": 1,
+                    "state": "ok",
+                    "runs": 1,
+                    "st": 0,
+                    "ns": 31120,
+                    "at": 47715,
+                    "argv": [
+                      "echo",
+                      "spike-tool"
+                    ],
+                    "res": "intrinsic",
+                    "end_ns": 78835,
+                    "end_seq": 6
+                  },
+                  {
+                    "k": "word",
+                    "lo": 0,
+                    "hi": 4,
+                    "p": 2,
+                    "state": "skipped"
+                  },
+                  {
+                    "k": "word",
+                    "lo": 5,
+                    "hi": 15,
+                    "p": 2,
+                    "state": "skipped"
+                  }
+                ],
+                "syntax": "AwAAAAAAAAkOZWNob3NwaWtlLXRvb2wKGQAABAAZAAQKABgDAAQBBBgEBQoBBAUAAAACBAIEAgAPAQIDAQAPAQICAAAPAQJBAAAAAgECAAAAAAEC"
+              }
+            ],
+            "history": [
+              {
+                "seq": 1,
+                "t_ns": 0,
+                "event_seq": 0,
+                "vpid": 1073741824,
+                "kind": "RunStart"
+              },
+              {
+                "seq": 3,
+                "t_ns": 47715,
+                "event_seq": 2,
+                "u": 0,
+                "n": 2,
+                "command": {
+                  "run": 3,
+                  "vpid": 1073741824,
+                  "seq": 66
+                },
+                "vpid": 1073741824,
+                "kind": "CmdStart"
+              },
+              {
+                "seq": 4,
+                "t_ns": 47715,
+                "event_seq": 3,
+                "u": 0,
+                "n": 2,
+                "command": {
+                  "run": 3,
+                  "vpid": 1073741824,
+                  "seq": 66
+                },
+                "vpid": 1073741824,
+                "kind": "CmdExpanded",
+                "argv": [
+                  "echo",
+                  "spike-tool"
+                ],
+                "assigns": [],
+                "resolved": "intrinsic",
+                "redirs": []
+              },
+              {
+                "seq": 5,
+                "t_ns": 76770,
+                "u": 0,
+                "n": 2,
+                "command": {
+                  "run": 3,
+                  "vpid": 1073741824,
+                  "seq": 66
+                },
+                "vpid": 1073741824,
+                "kind": "Output",
+                "text": "spike-tool\n",
+                "fd": 1
+              },
+              {
+                "seq": 6,
+                "t_ns": 78835,
+                "event_seq": 4,
+                "u": 0,
+                "n": 2,
+                "command": {
+                  "run": 3,
+                  "vpid": 1073741824,
+                  "seq": 66
+                },
+                "vpid": 1073741824,
+                "kind": "CmdEnd",
+                "status": 0,
+                "dur_ns": 31120,
+                "pipestatus": []
+              },
+              {
+                "seq": 7,
+                "t_ns": 85268,
+                "event_seq": 5,
+                "vpid": 1073741824,
+                "kind": "RunEnd",
+                "status": 0
+              }
+            ]
+          }
+        }
+      },
+      "isError": false
+    },
+    "prompt_result_completed": {
+      "type": "prompt_result",
+      "id": "req_1",
+      "agentInvoked": true,
+      "status": "completed",
+      "sessionSettled": true
+    },
+    "prompt_result_aborted": {
+      "type": "prompt_result",
+      "id": "req_1",
+      "agentInvoked": true,
+      "status": "aborted",
+      "sessionSettled": true
+    },
+    "prompt_result_error": {
+      "type": "prompt_result",
+      "id": "req_1",
+      "agentInvoked": true,
+      "status": "error",
+      "sessionSettled": true,
+      "error": {
+        "message": "400 spike mock provider failure (type=invalid_request_error)",
+        "provider": "compat",
+        "model": "spike-model",
+        "retryable": false,
+        "httpStatus": 400
+      }
+    },
+    "session_settled": {
+      "type": "session_settled"
+    },
+    "approval_select": {
+      "type": "extension_ui_request",
+      "id": "15c91765c5c82087",
+      "method": "select",
+      "title": "Allow tool: bash\nCommand: echo spike-tool",
+      "options": [
+        "Approve",
+        "Approve bash for this session",
+        "Deny"
+      ]
+    },
+    "local_command_prompt_response": {
+      "id": "req_1",
+      "type": "response",
+      "command": "prompt",
+      "success": true,
+      "data": {
+        "agentInvoked": false
+      }
+    },
+    "command_output": {
+      "type": "command_output",
+      "text": "Current model: compat/spike-model"
+    },
+    "busy_prompt_error_response": {
+      "id": "req_2",
+      "type": "response",
+      "command": "prompt",
+      "success": false,
+      "error": "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
+    },
+    "busy_prompt_result_error": {
+      "type": "prompt_result",
+      "id": "req_2",
+      "agentInvoked": false,
+      "status": "error",
+      "sessionSettled": false,
+      "error": {
+        "message": "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
+        "retryable": false
+      }
+    },
+    "switch_session_response": {
+      "id": "sw-1",
+      "type": "response",
+      "command": "switch_session",
+      "success": true,
+      "data": {
+        "cancelled": false
+      }
+    },
+    "get_state_keys": [
+      "autoCompactionEnabled",
+      "contextUsage",
+      "dumpTools",
+      "fastModeActive",
+      "fastModeEnabled",
+      "followUpMode",
+      "goal",
+      "hasPendingAsyncWork",
+      "interruptMode",
+      "isCompacting",
+      "isSettled",
+      "isStreaming",
+      "messageCount",
+      "model",
+      "queuedMessageCount",
+      "queuedMessages",
+      "sessionFile",
+      "sessionId",
+      "slowModeEnabled",
+      "slowModeSupported",
+      "steeringMode",
+      "systemPrompt",
+      "thinkingLevel",
+      "todoPhases",
+      "tokensPerSecond"
+    ]
+  }
+}

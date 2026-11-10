@@ -46,6 +46,7 @@ The parent workflow remains an orchestration execution. The plugin manages A2A a
 | Banyanos agent | `banyanos_agent_handler.BanyanosAgentHandler` | Authenticated GraphQL / WebSocket subscriptions through the gateway | Proposed handler |
 | Goose | `goose_handler.GooseAgentHandler` | ACP over HTTP | Existing adapter; validate deployed capabilities |
 | Pi | `pi_handler.PiAgentHandler` | Pi sidecar HTTP + SSE | Existing adapter; validate deployed capabilities |
+| omp | `omp_handler.OmpAgentHandler` | omp sidecar HTTP + SSE (omp dialect of the pi sidecar) | Existing adapter; validate deployed capabilities |
 | Hermes | `hermes_handler.HermesAgentHandler` | Hermes API HTTP + SSE | Existing adapter; validate deployed capabilities |
 | OpenClaw | `openclaw_handler.OpenClawAgentHandler` | OpenClaw gateway HTTP + SSE | Existing adapter; remote cancellation is limited |
 | CoreEngine | `core_engine_handler.CoreEngineAgentHandler` | GraphQL / WebSocket | Existing adapter; preserve existing registrations |
