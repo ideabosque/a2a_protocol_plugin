@@ -1,6 +1,12 @@
 # Long-Running Tasks and SSE Delivery Development Plan
 
-Updated: 2026-11-10. Status: proposed; this document does not implement the enhancement.
+Updated: 2026-11-10. Status: **Phase 1 partially implemented** on branch
+`feature/long-running-tasks` (SDK cancellation contract, the bounded/offline
+test guards, the captured response contract, and the gateway's SSE cursor).
+Phases 2–5 are NOT implemented. The measured state, the live findings and
+the scenario-by-scenario coverage are recorded in
+`docker-a2a-gateway/docs/LONG_RUNNING_TASKS_CERTIFICATION.md` — an
+unimplemented requirement or a collection stall is never recorded as a pass.
 
 ## 1. Outcome and compatibility decision
 

@@ -11,10 +11,14 @@ Unit tests for ai_agent_core_engine bridge utility:
 - execute_ai_agent_non_streaming (with mocked handler)
 - execute_ai_agent_streaming (with mocked queue + dual-path emission)
 
-Run with: pytest a2a_protocol_plugin/tests/test_phase10.py -v
+The suite is offline and bounded: non-loopback connections are rejected and a
+stdlib faulthandler watchdog aborts a hanging test with a stack dump, so the
+run can never stall silently (Phase 1 gate).
 """
 
+import faulthandler
 import os
+import socket
 import sys
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -44,6 +48,74 @@ from a2a_protocol_plugin.handlers.a2a_ai_agent_utility import (
 )
 
 __author__ = "SilvaEngine Team"
+
+# ---------------------------------------------------------------------------
+# Bounded, offline execution guard (Phase 1 gate)
+# ---------------------------------------------------------------------------
+# The focused suite must collect and run deterministically, offline and within
+# a bounded time. Two guards make that true instead of merely likely:
+#
+# 1. _offline_guard rejects any non-loopback socket connection. A test that
+#    accidentally depends on a live service fails immediately with a clear
+#    error instead of blocking on a network timeout.
+# 2. _bounded_runtime arms a stdlib faulthandler watchdog. The A2A SDK is
+#    asyncio-based, so a lost await would otherwise stall the whole run with
+#    no output at all; the watchdog dumps every thread's stack and aborts the
+#    run, so a stall is bounded and diagnosable.
+
+_HANG_TIMEOUT_SECONDS = 30
+_LOOPBACK_HOSTS = {"", "0.0.0.0", "::1", "localhost", "ip6-localhost"}
+
+
+class _OfflineViolation(RuntimeError):
+    """Raised when a unit test tries to reach a non-loopback host."""
+
+
+def _is_loopback(address: object) -> bool:
+    """Whether a connect() address points at the local machine."""
+    if isinstance(address, tuple) and address:
+        host = str(address[0])
+        return host in _LOOPBACK_HOSTS or host.startswith("127.")
+    return True
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _offline_guard():
+    """Forbid outbound (non-loopback) connections while this module runs."""
+    original_connect = socket.socket.connect
+    original_connect_ex = socket.socket.connect_ex
+
+    def guarded_connect(self, address, *args, **kwargs):
+        if not _is_loopback(address):
+            raise _OfflineViolation(
+                f"outbound connection to {address!r} is not allowed in unit tests"
+            )
+        return original_connect(self, address, *args, **kwargs)
+
+    def guarded_connect_ex(self, address, *args, **kwargs):
+        if not _is_loopback(address):
+            raise _OfflineViolation(
+                f"outbound connection to {address!r} is not allowed in unit tests"
+            )
+        return original_connect_ex(self, address, *args, **kwargs)
+
+    socket.socket.connect = guarded_connect
+    socket.socket.connect_ex = guarded_connect_ex
+    try:
+        yield
+    finally:
+        socket.socket.connect = original_connect
+        socket.socket.connect_ex = original_connect_ex
+
+
+@pytest.fixture(autouse=True)
+def _bounded_runtime():
+    """Abort the run with a traceback if a test exceeds the hang budget."""
+    faulthandler.dump_traceback_later(_HANG_TIMEOUT_SECONDS, exit=True)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 @pytest.fixture
@@ -1042,3 +1114,25 @@ class TestAiCoreAvailableFlag:
     def test_flag_exists(self):
         # Ensure the module exposes the flag regardless of install state
         assert isinstance(AI_CORE_AVAILABLE, bool)
+
+
+class TestBoundedOfflineGuard:
+    """The Phase 1 execution guards themselves must keep working."""
+
+    def test_non_loopback_connect_is_rejected(self):
+        sock = socket.socket()
+        try:
+            with pytest.raises(_OfflineViolation):
+                sock.connect(("93.184.216.34", 80))
+        finally:
+            sock.close()
+
+    def test_loopback_addresses_are_allowed(self):
+        assert _is_loopback(("127.0.0.1", 5432)) is True
+        assert _is_loopback(("localhost", 5432)) is True
+        assert _is_loopback(("::1", 5432)) is True
+        assert _is_loopback(("93.184.216.34", 80)) is False
+        assert _is_loopback("not-an-address") is True
+
+    def test_watchdog_budget_is_finite(self):
+        assert 0 < _HANG_TIMEOUT_SECONDS <= 60
